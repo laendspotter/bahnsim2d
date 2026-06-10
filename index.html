@@ -2,17 +2,17 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>Bahnsim 2D — SSB DT 8.12</title>
+<title>Bahnsim 2D — SSB Doppeltriebwagen</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { height:100%; }
-body { background:#e6e1d3; display:block; overflow:hidden; font-family:'Georgia',serif; cursor:default; }
+body { background:#efebe0; display:block; overflow:hidden; font-family:'Georgia',serif; cursor:default; }
 canvas { display:block; position:fixed; top:0; left:0; }
-#hud { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:flex; gap:30px; color:#3a3530; font-size:12px; letter-spacing:.1em; opacity:.55; pointer-events:none; font-style:italic; user-select:none; }
-#hud span { border-bottom:1px solid #999; padding-bottom:1px; }
+#hud { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); display:flex; gap:30px; color:#4a443c; font-size:12px; letter-spacing:.1em; opacity:.55; pointer-events:none; font-style:italic; user-select:none; }
+#hud span { border-bottom:1px solid #a99; padding-bottom:1px; }
 #zone { position:fixed; top:20px; left:50%; transform:translateX(-50%); color:#4a443c; font-size:11px; font-style:italic; letter-spacing:.18em; opacity:0; transition:opacity 1.6s; pointer-events:none; }
-#keys { position:fixed; bottom:16px; right:18px; color:#aaa39a; font-size:10px; text-align:right; line-height:1.8; pointer-events:none; font-style:italic; }
-#dist { position:fixed; bottom:16px; left:18px; color:#aaa39a; font-size:10px; font-style:italic; pointer-events:none; }
+#keys { position:fixed; bottom:16px; right:18px; color:#a59d92; font-size:10px; text-align:right; line-height:1.8; pointer-events:none; font-style:italic; }
+#dist { position:fixed; bottom:16px; left:18px; color:#a59d92; font-size:10px; font-style:italic; pointer-events:none; }
 </style>
 </head>
 <body>
@@ -32,27 +32,28 @@ const ctx = canvas.getContext('2d');
 const zoneEl = document.getElementById('zone');
 const distEl = document.getElementById('dist');
 
-// ── Paper texture ───────────────────────────────────────────────────────────
+// ── Deterministic pencil randomness (no flicker/boil) ─────────────────────────
+let _s=1;
+function srand(seed){ _s=(Math.abs(Math.floor(seed))>>>0)||1; }
+function frand(){ _s=(_s*1664525+1013904223)>>>0; return _s/4294967296; }
+function rnd(n){ return (frand()-.5)*n; }
+
+// ── Paper ─────────────────────────────────────────────────────────────────────
 const paper = document.createElement('canvas');
 const pctx = paper.getContext('2d');
 function buildPaper(){
-  paper.width = canvas.width; paper.height = canvas.height;
-  pctx.fillStyle='#ece7d8'; pctx.fillRect(0,0,paper.width,paper.height);
+  paper.width=canvas.width; paper.height=canvas.height;
+  pctx.fillStyle='#f1ede2'; pctx.fillRect(0,0,paper.width,paper.height);
   const id=pctx.getImageData(0,0,paper.width,paper.height), d=id.data;
   for(let i=0;i<d.length;i+=4){
-    const n=(Math.random()-.5)*16;
-    d[i]=cl(d[i]+n); d[i+1]=cl(d[i+1]+n*.9); d[i+2]=cl(d[i+2]+n*.72);
+    const n=(Math.random()-.5)*11;
+    d[i]=cl(d[i]+n); d[i+1]=cl(d[i+1]+n*.92); d[i+2]=cl(d[i+2]+n*.78);
   }
   pctx.putImageData(id,0,0);
-  for(let y=0;y<paper.height;y+=2+Math.random()*6){
-    pctx.globalAlpha=Math.random()*.018; pctx.strokeStyle='#9a8a68'; pctx.lineWidth=.3;
-    pctx.beginPath(); pctx.moveTo(0,y); pctx.lineTo(paper.width,y+(Math.random()-.5)*1.2); pctx.stroke();
-  }
-  // a couple of soft smudges
-  for(let s=0;s<5;s++){
-    pctx.globalAlpha=.015; pctx.fillStyle='#8a7a58';
+  for(let s=0;s<6;s++){
+    pctx.globalAlpha=.012; pctx.fillStyle='#9a8a6c';
     pctx.beginPath();
-    pctx.ellipse(Math.random()*paper.width,Math.random()*paper.height,80+Math.random()*160,40+Math.random()*100,Math.random()*3,0,Math.PI*2);
+    pctx.ellipse(Math.random()*paper.width,Math.random()*paper.height,90+Math.random()*200,50+Math.random()*120,Math.random()*3,0,Math.PI*2);
     pctx.fill();
   }
   pctx.globalAlpha=1;
@@ -61,40 +62,43 @@ function cl(v){return Math.max(0,Math.min(255,v));}
 function resize(){ canvas.width=innerWidth; canvas.height=innerHeight; buildPaper(); }
 resize(); addEventListener('resize',resize);
 
-// ── Pencil primitives ───────────────────────────────────────────────────────
-const INK='#2a2620', INKM='#5c544a', INKF='#9a9286';
+// ── Pencil palette / primitives ───────────────────────────────────────────────
+const INK='#2e2a24';
+const GRAPHITE='rgba(62,57,50,1)'; // used via alpha
 
-function rnd(n){return(Math.random()-.5)*n;}
-
-// wobbly multi-segment line
-function pl(x1,y1,x2,y2,a=.55,w=1,s=0){
-  if(!s){ const L=Math.hypot(x2-x1,y2-y1); s=Math.max(1,Math.round(L/16)); }
+// wobbly pencil polyline
+function pl(x1,y1,x2,y2,a=.5,w=1,s=0){
+  if(!s){ const L=Math.hypot(x2-x1,y2-y1); s=Math.max(1,Math.round(L/15)); }
   ctx.save(); ctx.globalAlpha=a; ctx.lineWidth=w; ctx.strokeStyle=INK; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(x1+rnd(.6),y1+rnd(.6));
-  for(let i=1;i<=s;i++){const t=i/s; ctx.lineTo(x1+(x2-x1)*t+rnd(.9),y1+(y2-y1)*t+rnd(.9));}
+  ctx.beginPath(); ctx.moveTo(x1+rnd(.7),y1+rnd(.7));
+  for(let i=1;i<=s;i++){const t=i/s; ctx.lineTo(x1+(x2-x1)*t+rnd(1),y1+(y2-y1)*t+rnd(1));}
   ctx.stroke();
-  ctx.globalAlpha=a*.12; ctx.lineWidth=w*2.2;
-  ctx.beginPath(); ctx.moveTo(x1+rnd(.7),y1+rnd(.7)); ctx.lineTo(x2+rnd(.7),y2+rnd(.7)); ctx.stroke();
+  ctx.globalAlpha=a*.14; ctx.lineWidth=w*2.3;
+  ctx.beginPath(); ctx.moveTo(x1+rnd(.8),y1+rnd(.8)); ctx.lineTo(x2+rnd(.8),y2+rnd(.8)); ctx.stroke();
   ctx.restore();
 }
-// straight crisp line (for vehicle, no double pass)
-function ln(x1,y1,x2,y2,a=.6,w=1){
+function ln(x1,y1,x2,y2,a=.55,w=1){
   ctx.save(); ctx.globalAlpha=a; ctx.lineWidth=w; ctx.strokeStyle=INK; ctx.lineCap='round';
   ctx.beginPath(); ctx.moveTo(x1+rnd(.5),y1+rnd(.5)); ctx.lineTo(x2+rnd(.5),y2+rnd(.5)); ctx.stroke();
   ctx.restore();
 }
-function pr(x,y,w,h,a=.55,lw=1){ pl(x,y,x+w,y,a,lw); pl(x+w,y,x+w,y+h,a,lw); pl(x+w,y+h,x,y+h,a,lw); pl(x,y+h,x,y,a,lw); }
+function pr(x,y,w,h,a=.5,lw=1){ pl(x,y,x+w,y,a,lw); pl(x+w,y,x+w,y+h,a,lw); pl(x+w,y+h,x,y+h,a,lw); pl(x,y+h,x,y,a,lw); }
 
+// graphite tone fill (soft mass)
+function tone(x,y,w,h,a){ ctx.save(); ctx.globalAlpha=a; ctx.fillStyle=GRAPHITE; ctx.fillRect(x,y,w,h); ctx.restore(); }
+function toneEllipse(cx,cy,rx,ry,a){ ctx.save(); ctx.globalAlpha=a; ctx.fillStyle=GRAPHITE; ctx.beginPath(); ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); ctx.fill(); ctx.restore(); }
+
+// hatching
 function ht(x,y,w,h,a=.08,sp=6,ang=45){
-  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineWidth=.4; ctx.lineCap='round';
+  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineWidth=.45; ctx.lineCap='round';
   ctx.beginPath();
-  const r=ang*Math.PI/180, dg=Math.hypot(w,h)*1.6;
+  const r=ang*Math.PI/180, dg=Math.hypot(w,h)*1.55;
   for(let d=-dg;d<dg;d+=sp){
     const cx=x+w/2,cy=y+h/2;
     const ax=cx+d*Math.cos(r+Math.PI/2)-dg*Math.cos(r), ay=cy+d*Math.sin(r+Math.PI/2)-dg*Math.sin(r);
     const bx=cx+d*Math.cos(r+Math.PI/2)+dg*Math.cos(r), by=cy+d*Math.sin(r+Math.PI/2)+dg*Math.sin(r);
     const p=clip(ax,ay,bx,by,x,y,x+w,y+h);
-    if(p){ctx.moveTo(p[0]+rnd(.3),p[1]+rnd(.3)); ctx.lineTo(p[2]+rnd(.3),p[3]+rnd(.3));}
+    if(p){ctx.moveTo(p[0]+rnd(.4),p[1]+rnd(.4)); ctx.lineTo(p[2]+rnd(.4),p[3]+rnd(.4));}
   }
   ctx.stroke(); ctx.restore();
 }
@@ -107,7 +111,20 @@ function clip(ax,ay,bx,by,x0,y0,x1,y1){
   return[ax+t0*dx,ay+t0*dy,ax+t1*dx,ay+t1*dy];
 }
 
-// ── Terrain (the heart: rolling hills the track follows) ──────────────────────
+// dense scribble inside an ellipse — the foliage texture
+function scribble(cx,cy,rx,ry,n,a,w=.6){
+  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineWidth=w; ctx.lineCap='round';
+  ctx.beginPath();
+  for(let i=0;i<n;i++){
+    const aa=frand()*Math.PI*2, rr=Math.sqrt(frand());
+    const px=cx+Math.cos(aa)*rx*rr, py=cy+Math.sin(aa)*ry*rr;
+    ctx.moveTo(px,py);
+    ctx.quadraticCurveTo(px+rnd(7),py+rnd(7),px+rnd(10),py+rnd(8));
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+// ── Terrain ───────────────────────────────────────────────────────────────────
 function terrainY(x){
   return  Math.sin(x*0.00042+0.5)*210
         + Math.sin(x*0.00091+1.3)*95
@@ -115,24 +132,18 @@ function terrainY(x){
         + Math.sin(x*0.00500+0.2)*16;
 }
 function slopeAt(x){ const d=8; return (terrainY(x+d)-terrainY(x-d))/(2*d); }
-
-// far mountain ridge
 function ridgeY(x,seed){
   return  Math.sin(x*0.00030+seed)*150
         + Math.sin(x*0.00075+seed*1.7)*70
         + Math.sin(x*0.00170+seed*2.3)*30;
 }
 
-// ── World state ───────────────────────────────────────────────────────────────
-// Short-Trip-style momentum physics: hold ←/→ to apply engine force,
-// gravity pulls you down hills, drag + rolling resistance slow you.
-let tramX=0, vel=0, dist=0;        // vel = signed horizontal speed (px/s)
-const ENGINE=150;                  // engine acceleration (px/s^2)
-const GRAVITY=330;                 // gravity along slope
-const DRAG=0.7;                    // exponential air/rolling drag
-const ROLL=28;                     // constant rolling resistance
+// ── World / physics state (Short-Trip momentum) ───────────────────────────────
+let tramX=0, vel=0, dist=0;
+const ENGINE=150, GRAVITY=330, DRAG=0.7, ROLL=28;
 let camX=0, camY=0;
 let doorsOpen=false, doorT=0, boardT=0, pax=0, stoppedAt=null;
+let destName='Hauptbahnhof';
 
 const stnNames=[
   'Hauptbahnhof','Stadtmitte','Marktplatz','Charlottenplatz','Olgaeck',
@@ -144,32 +155,27 @@ const stnNames=[
   'Hölderlinpl.','Eugensplatz','Geroksruhe','Stöckach','Gaisburg','Wangen',
 ];
 const stations=[];
-let sxw=900;
-for(let i=0;i<2000;i++){ sxw+=900+Math.random()*800; stations.push({x:sxw,name:stnNames[i%stnNames.length],waiting:Math.floor(Math.random()*7)+1,served:false}); }
-let destName='Hauptbahnhof';
+{ let sxw=900;
+  for(let i=0;i<2000;i++){ sxw+=900+Math.random()*800; stations.push({x:sxw,name:stnNames[i%stnNames.length],waiting:Math.floor(Math.random()*7)+1,served:false}); } }
 
-// scenery seeds
 const scenery=[];
-for(let i=0;i<6000;i++){
+for(let i=0;i<7000;i++){
   const x=Math.random()*900000, r=Math.random();
-  if     (r<.34) scenery.push({t:'pine', x,h:70+Math.random()*150});
-  else if(r<.55) scenery.push({t:'tree', x,h:60+Math.random()*120});
-  else if(r<.66) scenery.push({t:'bush', x,h:18+Math.random()*26});
-  else if(r<.74) scenery.push({t:'rock', x,h:14+Math.random()*30});
-  else if(r<.82) scenery.push({t:'grass',x,h:10+Math.random()*16});
-  else if(r<.90) scenery.push({t:'house',x,w:60+Math.random()*55,h:48+Math.random()*40});
-  else if(r<.95) scenery.push({t:'church',x,h:90+Math.random()*50});
-  else           scenery.push({t:'factory',x,w:80+Math.random()*60,h:60+Math.random()*40});
+  if     (r<.36) scenery.push({t:'pine', x,h:80+Math.random()*170});
+  else if(r<.58) scenery.push({t:'tree', x,h:65+Math.random()*120});
+  else if(r<.70) scenery.push({t:'bush', x,h:16+Math.random()*22});
+  else if(r<.78) scenery.push({t:'rock', x,h:10+Math.random()*22});
+  else if(r<.88) scenery.push({t:'grass',x,h:8+Math.random()*12});
+  else if(r<.94) scenery.push({t:'house',x,w:70+Math.random()*60,h:52+Math.random()*42});
+  else           scenery.push({t:'barn', x,w:80+Math.random()*50,h:46+Math.random()*30});
 }
 scenery.sort((a,b)=>a.x-b.x);
 
-const birds=Array.from({length:10},()=>({x:Math.random()*20000,y:-260-Math.random()*160,spd:18+Math.random()*40,flap:Math.random()*6}));
-const clouds=Array.from({length:8},()=>({x:Math.random()*30000,y:-340-Math.random()*200,w:120+Math.random()*180}));
+const birds=Array.from({length:9},()=>({x:Math.random()*20000,y:-280-Math.random()*180,spd:18+Math.random()*40,flap:Math.random()*6}));
 
 const keys={};
 addEventListener('keydown',e=>{keys[e.code]=true; if(e.code==='Space')e.preventDefault();});
 addEventListener('keyup',e=>{keys[e.code]=false;});
-// touch / mouse hold halves
 function pointer(px){ keys._left=px<innerWidth/2; keys._right=px>=innerWidth/2; }
 addEventListener('mousedown',e=>pointer(e.clientX));
 addEventListener('mouseup',()=>{keys._left=keys._right=false;});
@@ -193,33 +199,22 @@ function update(dt){
   const left = keys.ArrowLeft||keys.KeyA||keys._left;
   const right= keys.ArrowRight||keys.KeyD||keys._right;
 
-  // ── Physics (Short Trip style) ──
   if(!stoppedAt){
     const slope=slopeAt(tramX);
     const theta=Math.atan(slope);
-    // engine force from player input
-    let a = 0;
-    if(right) a += ENGINE;
-    if(left)  a -= ENGINE;
-    // gravity along slope: positive slope (downhill to the right) accelerates +x
-    a += GRAVITY*Math.sin(theta);
-    vel += a*dt;
-    // exponential drag
-    vel *= Math.exp(-DRAG*dt);
-    // constant rolling resistance opposing motion
-    if(Math.abs(vel)>0.01){ const rr=ROLL*dt; vel += (vel>0?-1:1)*Math.min(rr,Math.abs(vel)); }
-    // static rest: snap to 0 on near-flat ground when idle & slow
+    let a=0;
+    if(right) a+=ENGINE;
+    if(left)  a-=ENGINE;
+    a+=GRAVITY*Math.sin(theta);
+    vel+=a*dt;
+    vel*=Math.exp(-DRAG*dt);
+    if(Math.abs(vel)>0.01){ const rr=ROLL*dt; vel+=(vel>0?-1:1)*Math.min(rr,Math.abs(vel)); }
     if(!left&&!right&&Math.abs(vel)<5&&Math.abs(GRAVITY*Math.sin(theta))<ROLL) vel=0;
+    tramX+=vel*dt;
+    dist+=Math.abs(vel)*dt;
+  } else vel=0;
 
-    tramX += vel*dt;
-    dist  += Math.abs(vel)*dt;
-  } else {
-    vel=0;
-  }
-
-  // ── Station stop & boarding (player must brake to stop) ──
   if(!stoppedAt && Math.abs(vel)<7){
-    // find an un-served station the tram is sitting at
     let i=lowerBound(stations,tramX-60);
     for(; i<stations.length; i++){
       const s=stations[i]; if(s.x>tramX+60) break;
@@ -229,556 +224,698 @@ function update(dt){
   if(stoppedAt){
     doorT-=dt; if(doorT<=0&&!doorsOpen) doorsOpen=true;
     if(doorsOpen){ boardT-=dt; if(boardT<=0){ pax=Math.max(0,pax-Math.floor(Math.random()*4+1)); pax=Math.min(48,pax+Math.min(stoppedAt.waiting,48-pax)); stoppedAt.waiting=0; stoppedAt.served=true; doorsOpen=false; stoppedAt=null; } }
-    // allow driving away the moment a key is pressed even mid-board
     if((left||right)&&!doorsOpen){ stoppedAt=null; }
   }
 
-  // next station ahead (for HUD)
   let ahead=null;
-  { let i=lowerBound(stations,tramX); ahead = stations[Math.min(i,stations.length-1)]; }
-  destName = ahead?ahead.name:'—';
+  { let i=lowerBound(stations,tramX); ahead=stations[Math.min(i,stations.length-1)]; }
+  destName=ahead?ahead.name:'—';
 
-  // camera
   camX = tramX - canvas.width*0.36;
   const targetCamY = terrainY(tramX) - canvas.height*0.60;
   camY += (targetCamY-camY)*Math.min(1,dt*4);
 
   for(const b of birds){ b.x+=b.spd*dt; b.flap+=dt*3; if(b.x-camX>canvas.width+200) b.x-=22000; }
-  for(const c of clouds){ c.x-=dt*6; if(c.x-camX< -400) c.x+=30000; }
 
   document.getElementById('h-speed').textContent=Math.round(Math.abs(vel)*0.235/5)*5+' km/h';
-  document.getElementById('h-station').textContent='→ '+(ahead?ahead.name:'—')+(ahead&&Math.abs(ahead.x-tramX)<300?' ·':'');
+  document.getElementById('h-station').textContent='→ '+destName+(ahead&&Math.abs(ahead.x-tramX)<300?' ·':'');
   document.getElementById('h-pax').textContent=pax+' Fahrgäste';
   distEl.textContent=(dist/1000).toFixed(2)+' km';
 }
 
-// world→screen
 const SX = wx => wx - camX;
 const SY = wy => wy - camY;
+function lowerBound(arr,x){ let lo=0,hi=arr.length; while(lo<hi){const m=(lo+hi)>>1; if(arr[m].x<x)lo=m+1;else hi=m;} return lo; }
 
 // ── Draw ──────────────────────────────────────────────────────────────────────
 function draw(){
   const W=canvas.width,H=canvas.height;
   ctx.drawImage(paper,0,0);
 
-  // clouds (very faint)
-  for(const c of clouds){
-    const x=SX(c.x), y=SY(c.y);
-    if(x< -400||x>W+400) continue;
-    ctx.save(); ctx.globalAlpha=.06; ctx.strokeStyle=INKF; ctx.lineWidth=.6;
-    for(let j=0;j<4;j++){ ctx.beginPath(); ctx.ellipse(x+j*c.w*.22+rnd(6),y+rnd(6),c.w*.28,c.w*.11,0,0,Math.PI*2); ctx.stroke(); }
-    ctx.restore();
-  }
-
-  // far mountains — 2 layers parallax
-  drawRidge(0.30, 4.1, -180, .16, true);
-  drawRidge(0.55, 1.7, -90,  .24, false);
+  // far ridges — soft tonal masses
+  drawRidge(0.22, 4.1, -210, .045, .10);
+  drawRidge(0.45, 1.7, -110, .065, .16);
 
   // birds
   for(const b of birds){
     const x=SX(b.x), y=SY(b.y); if(x<-40||x>W+40) continue;
-    ctx.save(); ctx.globalAlpha=.26; ctx.strokeStyle=INK; ctx.lineWidth=.7; ctx.lineCap='round';
+    ctx.save(); ctx.globalAlpha=.25; ctx.strokeStyle=INK; ctx.lineWidth=.7; ctx.lineCap='round';
     const f=Math.sin(b.flap)*5;
     ctx.beginPath(); ctx.moveTo(x-8,y+f); ctx.quadraticCurveTo(x-3,y,x,y+2); ctx.quadraticCurveTo(x+3,y,x+8,y+f); ctx.stroke(); ctx.restore();
   }
 
-  // ground fill under terrain
   drawGround();
 
-  // scenery behind track (visible window range)
-  const x0=camX-200, x1=camX+W+200;
-  // binary-ish scan: scenery sorted by x
+  // scenery
+  const x0=camX-260, x1=camX+W+260;
   let i=lowerBound(scenery,x0);
   for(; i<scenery.length; i++){
     const o=scenery[i]; if(o.x>x1) break;
-    const gx=SX(o.x), gy=SY(terrainY(o.x));
-    drawScenery(o,gx,gy);
+    srand(o.x*7.919+o.h*13);
+    drawScenery(o, SX(o.x), SY(terrainY(o.x)));
   }
 
-  // telegraph poles + wire
   drawPoles();
 
-  // stations
   for(let k=lowerBound(stations,x0); k<stations.length; k++){
     const s=stations[k]; if(s.x>x1) break;
+    srand(s.x*3.7);
     drawStation(s);
   }
 
-  // track
   drawTrack();
-
-  // tram
   drawTram();
-
-  // foreground grass blades (fast parallax) — subtle
   drawForeground();
 
   // vignette
   ctx.save();
-  const v=ctx.createRadialGradient(W/2,H*.48,H*.25,W/2,H*.5,H*.9);
-  v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(20,16,10,.26)');
+  const v=ctx.createRadialGradient(W/2,H*.48,H*.3,W/2,H*.5,H*.95);
+  v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(30,24,16,.18)');
   ctx.fillStyle=v; ctx.fillRect(0,0,W,H); ctx.restore();
 }
 
-function lowerBound(arr,x){ let lo=0,hi=arr.length; while(lo<hi){const m=(lo+hi)>>1; if(arr[m].x<x)lo=m+1;else hi=m;} return lo; }
-
-function drawRidge(parallax, seed, screenOff, alpha, hatched){
+function drawRidge(par,seed,off,fillA,lineA){
   const W=canvas.width,H=canvas.height;
-  const pcx=camX*parallax;
-  const baseY = SY(0)*0.25 + H*0.34 + screenOff; // dampened vertical follow
-  ctx.save(); ctx.globalAlpha=alpha; ctx.strokeStyle=INKM; ctx.lineWidth=.9; ctx.lineCap='round'; ctx.lineJoin='round';
+  const pcx=camX*par;
+  const baseY=SY(0)*0.22 + H*0.34 + off;
+  srand(seed*1000);
+  ctx.save();
+  // tonal mass
+  ctx.globalAlpha=fillA; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath(); ctx.moveTo(-40,H);
+  for(let px=-40;px<=W+40;px+=12){ ctx.lineTo(px,baseY+ridgeY(pcx+px,seed)); }
+  ctx.lineTo(W+40,H); ctx.closePath(); ctx.fill();
+  // crest line
+  ctx.globalAlpha=lineA; ctx.strokeStyle=INK; ctx.lineWidth=.9; ctx.lineCap='round'; ctx.lineJoin='round';
   ctx.beginPath();
-  let first=true;
-  for(let px=-40;px<=W+40;px+=10){
-    const wx=pcx+px; const y=baseY+ridgeY(wx,seed);
-    if(first){ctx.moveTo(px,y); first=false;} else ctx.lineTo(px+rnd(.5),y+rnd(.6));
-  }
+  for(let px=-40;px<=W+40;px+=10){ const y=baseY+ridgeY(pcx+px,seed); px===-40?ctx.moveTo(px,y):ctx.lineTo(px+rnd(.5),y+rnd(.6)); }
   ctx.stroke();
-  if(hatched){
-    ctx.globalAlpha=alpha*0.5; ctx.lineWidth=.4;
-    for(let px=-40;px<=W+40;px+=14){
-      const wx=pcx+px; const y=baseY+ridgeY(wx,seed);
-      ctx.beginPath(); ctx.moveTo(px,y+2); ctx.lineTo(px-6,y+18+Math.random()*10); ctx.stroke();
-    }
+  // sparse tiny conifers on crest
+  ctx.globalAlpha=lineA*.8; ctx.lineWidth=.7;
+  for(let px=0;px<=W;px+=46){
+    const wx=pcx+px; if(((wx*2654435761)>>>0)%5>1) continue;
+    const y=baseY+ridgeY(wx,seed);
+    const h=7+((wx>>>3)%7);
+    ctx.beginPath(); ctx.moveTo(px,y); ctx.lineTo(px,y-h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px-h*.3,y-h*.3); ctx.lineTo(px,y-h); ctx.lineTo(px+h*.3,y-h*.3); ctx.stroke();
   }
   ctx.restore();
 }
 
 function drawGround(){
   const W=canvas.width,H=canvas.height;
+  // fill below terrain
   ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(-20,H+20);
-  for(let px=-20;px<=W+20;px+=6){ const wx=camX+px; ctx.lineTo(px,SY(terrainY(wx))); }
+  ctx.beginPath(); ctx.moveTo(-20,H+20);
+  for(let px=-20;px<=W+20;px+=8){ ctx.lineTo(px,SY(terrainY(camX+px))); }
   ctx.lineTo(W+20,H+20); ctx.closePath();
-  ctx.globalAlpha=.05; ctx.fillStyle='#6b6256'; ctx.fill();
-  ctx.restore();
-
-  // terrain top line
-  ctx.save(); ctx.globalAlpha=.5; ctx.strokeStyle=INK; ctx.lineWidth=1.3; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.globalAlpha=.045; ctx.fillStyle=GRAPHITE; ctx.fill();
+  // darker band just under the surface
   ctx.beginPath();
-  for(let px=-20;px<=W+20;px+=6){ const wx=camX+px; const y=SY(terrainY(wx)); px===-20?ctx.moveTo(px,y):ctx.lineTo(px+rnd(.4),y+rnd(.5)); }
-  ctx.stroke();
-  // ghost
-  ctx.globalAlpha=.08; ctx.lineWidth=3; ctx.stroke();
+  for(let px=-20;px<=W+20;px+=8){ const y=SY(terrainY(camX+px)); px===-20?ctx.moveTo(px,y):ctx.lineTo(px,y); }
+  for(let px=W+20;px>=-20;px-=8){ ctx.lineTo(px,SY(terrainY(camX+px))+26); }
+  ctx.closePath(); ctx.globalAlpha=.035; ctx.fill();
   ctx.restore();
 
-  // sparse ground hatch just under the line
-  ctx.save(); ctx.globalAlpha=.05; ctx.strokeStyle=INK; ctx.lineWidth=.4;
-  for(let px=0;px<=W;px+=10){
-    const wx=camX+px; const y=SY(terrainY(wx));
-    ctx.beginPath(); ctx.moveTo(px+rnd(2),y+3); ctx.lineTo(px-5+rnd(2),y+16+Math.random()*8); ctx.stroke();
+  // terrain top line — soft, doubled
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.globalAlpha=.4; ctx.lineWidth=1.2;
+  ctx.beginPath();
+  const step=8, start=Math.floor(camX/step)*step;
+  for(let wx=start-step;wx<=camX+W+step;wx+=step){
+    srand(wx);
+    const px=SX(wx), y=SY(terrainY(wx));
+    wx===start-step?ctx.moveTo(px,y):ctx.lineTo(px+rnd(.6),y+rnd(.8));
   }
+  ctx.stroke();
+  ctx.globalAlpha=.07; ctx.lineWidth=3.2; ctx.stroke();
   ctx.restore();
+
+  // ground texture: grass strokes + pebbles (world-anchored, seeded)
+  const ts=26, t0=Math.floor((camX-ts)/ts)*ts;
+  for(let wx=t0;wx<camX+W+ts;wx+=ts){
+    srand(wx*1.31);
+    const px=SX(wx), y=SY(terrainY(wx));
+    const n=2+Math.floor(frand()*3);
+    for(let b=0;b<n;b++){
+      const bx=px+rnd(18), by=y+2+frand()*14;
+      pl(bx,by,bx+rnd(3),by-4-frand()*5,.14,.45,1);
+    }
+    if(frand()<.3){ const rx=px+rnd(20), ry2=y+6+frand()*12; toneEllipse(rx,ry2,1.5+frand()*2,1+frand()*1.4,.12); }
+  }
 }
 
-// ── Scenery drawers (all vertical — gravity) ─────────────────────────────────
+// ── Scenery ───────────────────────────────────────────────────────────────────
 function drawScenery(o,gx,gy){
-  if(gx<-150||gx>canvas.width+150) return;
-  ctx.save();
-  if(o.t==='pine')   drawPine(gx,gy,o.h);
+  if(gx<-220||gx>canvas.width+220) return;
+  if(o.t==='pine')  drawPine(gx,gy,o.h);
   else if(o.t==='tree')  drawTree(gx,gy,o.h);
   else if(o.t==='bush')  drawBush(gx,gy,o.h);
   else if(o.t==='rock')  drawRock(gx,gy,o.h);
   else if(o.t==='grass') drawGrass(gx,gy,o.h);
   else if(o.t==='house') drawHouse(gx,gy,o.w,o.h);
-  else if(o.t==='church')drawChurch(gx,gy,o.h);
-  else if(o.t==='factory')drawFactory(gx,gy,o.w,o.h);
+  else if(o.t==='barn')  drawBarn(gx,gy,o.w,o.h);
+}
+
+// conifer — layered drooping branch fans with tonal mass (Short-Trip look)
+function drawPine(x,gy,h){
+  const layers=9;
+  // soft silhouette tone
+  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath();
+  ctx.moveTo(x-h*.26,gy);
+  ctx.lineTo(x,gy-h*1.02);
+  ctx.lineTo(x+h*.26,gy);
+  ctx.closePath(); ctx.fill(); ctx.restore();
+  // trunk
+  pl(x,gy,x,gy-h*.97,.5,1.2);
+  pl(x+1.5,gy,x+1,gy-h*.5,.22,.7);
+  // branches: drooping curved strokes both sides, wider at bottom
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineCap='round';
+  for(let i=0;i<layers;i++){
+    const t=i/layers;
+    const ly=gy-h*(.10+t*.86);
+    const lw=h*(.30-t*.22);
+    const droop=lw*.45;
+    const nb=3;
+    for(let b=0;b<nb;b++){
+      const f=(b+1)/nb;
+      ctx.globalAlpha=.28+frand()*.2; ctx.lineWidth=.7;
+      ctx.beginPath();
+      ctx.moveTo(x,ly-h*.02*b);
+      ctx.quadraticCurveTo(x-lw*f*.6, ly+droop*f*.3, x-lw*f+rnd(2), ly+droop*f+rnd(2));
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x,ly-h*.02*b);
+      ctx.quadraticCurveTo(x+lw*f*.6, ly+droop*f*.3, x+lw*f+rnd(2), ly+droop*f+rnd(2));
+      ctx.stroke();
+    }
+    // needle texture: tiny strokes along the layer
+    ctx.globalAlpha=.12;
+    for(let nx=0;nx<4;nx++){
+      const ox=rnd(lw*1.4), oy=rnd(droop);
+      ctx.beginPath(); ctx.moveTo(x+ox,ly+oy); ctx.lineTo(x+ox+rnd(3),ly+oy+2+frand()*3); ctx.stroke();
+    }
+  }
   ctx.restore();
 }
 
-function drawPine(x,gy,h){
-  const a=.5;
-  pl(x,gy,x,gy-h,a,1.1);
-  for(let i=0;i<6;i++){
-    const t=i/6, ly=gy-h*(.10+t*.85), lw=h*(.30-t*.20);
-    pl(x-lw+rnd(1.5),ly+h*.04,x+rnd(2),ly-h*.10,a*.9,.9,2);
-    pl(x+lw+rnd(1.5),ly+h*.04,x+rnd(2),ly-h*.10,a*.9,.9,2);
-  }
-}
+// deciduous — overlapping tonal lobes + lumpy outline + scribble
 function drawTree(x,gy,h){
-  const a=.5;
-  pl(x-2,gy,x-1,gy-h*.42,a,1.4);
-  pl(x+2,gy,x+1,gy-h*.42,a*.7,.9);
-  const cy=gy-h*.42-h*.30, rx=h*.34, ry=h*.34;
-  // filled canopy: outline + interior hatch so it reads as foliage, not a ring
-  ht(x-rx,cy-ry,rx*2,ry*2,.05,5,40);
-  ht(x-rx,cy-ry,rx*2,ry*2,.04,5,130);
-  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineWidth=1; ctx.lineCap='round';
-  // bumpy canopy outline (single closed lumpy shape)
-  ctx.beginPath();
-  const lobes=9;
-  for(let s=0;s<=lobes*3;s++){
-    const ang=(s/(lobes*3))*Math.PI*2;
-    const bump=1+0.18*Math.sin(ang*lobes)+rnd(.08);
-    const px=x+Math.cos(ang)*rx*bump, py=cy+Math.sin(ang)*ry*bump+rnd(1);
-    s?ctx.lineTo(px,py):ctx.moveTo(px,py);
+  const trunkH=h*.40;
+  // trunk + root flare + a branch or two
+  pl(x-2,gy,x-1,gy-trunkH,.5,1.5);
+  pl(x+2,gy,x+1,gy-trunkH,.34,.9);
+  pl(x-2,gy,x-7,gy+2,.3,.8,1);
+  pl(x+2,gy,x+7,gy+2,.3,.8,1);
+  pl(x,gy-trunkH*.8,x-h*.12,gy-trunkH-h*.1,.3,.8,2);
+  const cy=gy-trunkH-h*.27, R=h*.34;
+  // lobes
+  const lobes=[[0,0,1],[-.55,.18,.62],[.55,.15,.66],[0,-.42,.6]];
+  for(const[ox,oy,s] of lobes){
+    toneEllipse(x+ox*R,cy+oy*R,R*s,R*s*.92,.06);
   }
-  ctx.closePath(); ctx.stroke();
-  // a few interior scribble strokes
-  ctx.globalAlpha=a*.4;
-  for(let s=0;s<5;s++){ const aa=Math.random()*Math.PI*2,rr=Math.random()*rx*.6; ctx.beginPath(); ctx.moveTo(x+Math.cos(aa)*rr,cy+Math.sin(aa)*rr); ctx.lineTo(x+Math.cos(aa)*rr+rnd(5),cy+Math.sin(aa)*rr+rnd(5)); ctx.stroke(); }
-  ctx.restore();
-}
-function drawBush(x,gy,h){
-  ctx.save(); ctx.globalAlpha=.45; ctx.strokeStyle=INK; ctx.lineWidth=.9; ctx.lineCap='round';
-  for(let lobe=0;lobe<3;lobe++){
-    const ox=(lobe-1)*h*.6;
+  // bottom shadow mass
+  toneEllipse(x,cy+R*.45,R*.8,R*.4,.05);
+  // scribble texture
+  scribble(x,cy,R*1.05,R*.95,Math.round(R*1.1),.13,.55);
+  scribble(x-R*.3,cy+R*.3,R*.6,R*.5,Math.round(R*.5),.10,.5);
+  // lumpy outline (broken arcs)
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineWidth=.9;
+  const segs=22;
+  for(let s=0;s<segs;s++){
+    if(frand()<.25) continue; // gaps — hand-drawn broken contour
+    const a0=(s/segs)*Math.PI*2, a1=((s+1)/segs)*Math.PI*2;
+    const bump=1+0.16*Math.sin(a0*7)+rnd(.06);
+    ctx.globalAlpha=.22+frand()*.18;
     ctx.beginPath();
-    for(let s=0;s<=12;s++){const ang=Math.PI+(s/12)*Math.PI; const px=x+ox+Math.cos(ang)*h*.7+rnd(1.2), py=gy+Math.sin(ang)*h+rnd(1.2); s?ctx.lineTo(px,py):ctx.moveTo(px,py);}
+    ctx.moveTo(x+Math.cos(a0)*R*bump+rnd(1.5),cy+Math.sin(a0)*R*.95*bump+rnd(1.5));
+    ctx.quadraticCurveTo(
+      x+Math.cos((a0+a1)/2)*R*(bump+.08), cy+Math.sin((a0+a1)/2)*R*.95*(bump+.08),
+      x+Math.cos(a1)*R*bump+rnd(1.5), cy+Math.sin(a1)*R*.95*bump+rnd(1.5));
     ctx.stroke();
   }
   ctx.restore();
 }
-function drawRock(x,gy,h){
-  ctx.save(); ctx.globalAlpha=.5; ctx.strokeStyle=INK; ctx.lineWidth=1; ctx.lineCap='round'; ctx.lineJoin='round';
-  ctx.beginPath();
-  ctx.moveTo(x-h,gy);
-  ctx.lineTo(x-h*.5,gy-h*.9+rnd(2));
-  ctx.lineTo(x+h*.2,gy-h+rnd(2));
-  ctx.lineTo(x+h,gy-h*.4+rnd(2));
-  ctx.lineTo(x+h*1.1,gy);
-  ctx.stroke();
+
+function drawBush(x,gy,h){
+  toneEllipse(x,gy-h*.5,h*1.3,h*.7,.06);
+  scribble(x,gy-h*.5,h*1.25,h*.65,Math.round(h*1.2),.14,.5);
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineWidth=.7;
+  for(let s=0;s<10;s++){
+    if(frand()<.3)continue;
+    const a0=Math.PI+ (s/10)*Math.PI, a1=Math.PI+((s+1)/10)*Math.PI;
+    ctx.globalAlpha=.25+frand()*.15;
+    ctx.beginPath();
+    ctx.moveTo(x+Math.cos(a0)*h*1.3,gy+Math.sin(a0)*h);
+    ctx.lineTo(x+Math.cos(a1)*h*1.3+rnd(2),gy+Math.sin(a1)*h+rnd(2));
+    ctx.stroke();
+  }
   ctx.restore();
-  ht(x-h,gy-h,h*2,h,.05,4,40);
-}
-function drawGrass(x,gy,h){
-  for(let b=0;b<4;b++){ const bx=x+rnd(8); pl(bx,gy,bx+rnd(4)-1,gy-h-Math.random()*5,.22,.5,2); }
-}
-function drawHouse(x,gy,w,h){
-  ht(x-w/2,gy-h,w,h,.05,9,90); pr(x-w/2,gy-h,w,h,.5,1);
-  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.1; ctx.globalAlpha=.55; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(x-w/2-5,gy-h); ctx.lineTo(x,gy-h-h*.5); ctx.lineTo(x+w/2+5,gy-h); ctx.stroke(); ctx.restore();
-  ht(x-w/2-5,gy-h-h*.5,w+10,h*.5,.06,4,130);
-  const nc=Math.max(1,Math.floor(w/26));
-  for(let k=0;k<nc;k++){ const wx=x-w/2+13+k*(w-18)/Math.max(nc-1,1); pr(wx-5,gy-h*.6,10,9,.45,.7); pl(wx,gy-h*.6,wx,gy-h*.6+9,.2,.4); pl(wx-5,gy-h*.6+4.5,wx+5,gy-h*.6+4.5,.2,.4); }
-  pr(x-4,gy-h*.38,8,h*.38,.42,.7);
-}
-function drawChurch(x,gy,h){
-  const w=h*.42;
-  ht(x-w/2,gy-h*.62,w,h*.62,.05,9,90); pr(x-w/2,gy-h*.62,w,h*.62,.5,.9);
-  pr(x-10,gy-h,20,h,.52,.9); ht(x-10,gy-h,20,h,.06,5,90);
-  pl(x-11,gy-h,x,gy-h-h*.42,.55,1); pl(x+11,gy-h,x,gy-h-h*.42,.55,1);
-  pl(x,gy-h-h*.34,x,gy-h-h*.14,.5,1); pl(x-6,gy-h-h*.26,x+6,gy-h-h*.26,.5,1);
-}
-function drawFactory(x,gy,w,h){
-  ht(x-w/2,gy-h,w,h,.05,8,90); pr(x-w/2,gy-h,w,h,.5,1);
-  pr(x-w*.25-6,gy-h-38,12,38,.5,.9); ht(x-w*.25-6,gy-h-38,12,38,.06,5,90);
-  for(let s=0;s<3;s++){ ctx.save(); ctx.globalAlpha=.05; ctx.strokeStyle=INKF; ctx.lineWidth=.5; ctx.beginPath(); ctx.ellipse(x-w*.25+rnd(3),gy-h-40-s*10,4+s*2,3+s,0,0,Math.PI*2); ctx.stroke(); ctx.restore(); }
-  const nc=Math.max(2,Math.floor(w/24));
-  for(let k=0;k<nc;k++){ const wx=x-w/2+15+k*(w-26)/Math.max(nc-1,1); pr(wx-5,gy-h*.6,10,13,.4,.7); }
 }
 
-// ── Telegraph poles & wire (classic Short Trip) ──────────────────────────────
+function drawRock(x,gy,h){
+  ctx.save(); ctx.globalAlpha=.07; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath();
+  ctx.moveTo(x-h,gy); ctx.lineTo(x-h*.5,gy-h*.85); ctx.lineTo(x+h*.25,gy-h); ctx.lineTo(x+h,gy-h*.35); ctx.lineTo(x+h*1.08,gy);
+  ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.globalAlpha=.4; ctx.strokeStyle=INK; ctx.lineWidth=.9; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath();
+  ctx.moveTo(x-h,gy); ctx.lineTo(x-h*.5+rnd(1.5),gy-h*.85+rnd(1.5)); ctx.lineTo(x+h*.25+rnd(1.5),gy-h+rnd(1.5)); ctx.lineTo(x+h+rnd(1.5),gy-h*.35+rnd(1.5)); ctx.lineTo(x+h*1.08,gy);
+  ctx.stroke(); ctx.restore();
+  ht(x,gy-h,h*1.1,h,.09,3.5,55);
+  pl(x-h*.4,gy-h*.5,x+h*.2,gy-h*.6,.16,.5,2);
+}
+
+function drawGrass(x,gy,h){
+  for(let b=0;b<5;b++){
+    const bx=x+rnd(10);
+    ctx.save(); ctx.globalAlpha=.2+frand()*.12; ctx.strokeStyle=INK; ctx.lineWidth=.5; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(bx,gy+1);
+    ctx.quadraticCurveTo(bx+rnd(3),gy-h*.6,bx+rnd(6),gy-h-frand()*4);
+    ctx.stroke(); ctx.restore();
+  }
+}
+
+function drawHouse(x,gy,w,h){
+  tone(x-w/2,gy-h,w,h,.035);
+  ht(x-w/2,gy-h,w,h,.05,9,90);
+  pr(x-w/2,gy-h,w,h,.45,1);
+  // roof — dark tonal wedge
+  ctx.save(); ctx.globalAlpha=.10; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath(); ctx.moveTo(x-w/2-6,gy-h); ctx.lineTo(x,gy-h-h*.52); ctx.lineTo(x+w/2+6,gy-h); ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.1; ctx.globalAlpha=.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x-w/2-6+rnd(1),gy-h+rnd(1)); ctx.lineTo(x+rnd(2),gy-h-h*.52+rnd(3)); ctx.lineTo(x+w/2+6+rnd(1),gy-h+rnd(1)); ctx.stroke(); ctx.restore();
+  ht(x-w/2-6,gy-h-h*.52,w+12,h*.52,.10,4,135);
+  // windows — dark panes
+  const nc=Math.max(1,Math.floor(w/28));
+  for(let k=0;k<nc;k++){
+    const wx=x-w/2+15+k*(w-24)/Math.max(nc-1,1);
+    tone(wx-5,gy-h*.62,10,9,.14);
+    pr(wx-5,gy-h*.62,10,9,.4,.7);
+  }
+  pr(x-4,gy-h*.36,8,h*.36,.38,.7);
+  tone(x-4,gy-h*.36,8,h*.36,.08);
+}
+
+function drawBarn(x,gy,w,h){
+  tone(x-w/2,gy-h,w,h,.04);
+  ht(x-w/2,gy-h,w,h,.07,5,0);
+  pr(x-w/2,gy-h,w,h,.45,1);
+  ctx.save(); ctx.globalAlpha=.10; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath(); ctx.moveTo(x-w/2-4,gy-h); ctx.lineTo(x,gy-h-h*.6); ctx.lineTo(x+w/2+4,gy-h); ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1; ctx.globalAlpha=.48; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x-w/2-4,gy-h); ctx.lineTo(x+rnd(2),gy-h-h*.6+rnd(2)); ctx.lineTo(x+w/2+4,gy-h); ctx.stroke(); ctx.restore();
+  // big door
+  tone(x-w*.16,gy-h*.7,w*.32,h*.7,.07);
+  pr(x-w*.16,gy-h*.7,w*.32,h*.7,.4,.8);
+  pl(x-w*.16,gy-h*.7,x+w*.16,gy,.25,.6);
+  pl(x+w*.16,gy-h*.7,x-w*.16,gy,.25,.6);
+}
+
+// ── Telegraph poles & wires ──────────────────────────────────────────────────
 function drawPoles(){
   const W=canvas.width, sp=360;
   const tops=[];
   for(let wx=Math.floor((camX-sp)/sp)*sp; wx<camX+W+sp; wx+=sp){
+    srand(wx*.77);
     const gx=SX(wx), gy=SY(terrainY(wx));
-    const top=gy-150;
-    pl(gx,gy,gx,top,.4,1.1);
+    const top=gy-152;
+    // pole with slight taper: two near-vertical lines
+    pl(gx-1.4,gy,gx-.7,top,.42,1.1);
+    pl(gx+1.4,gy,gx+.7,top,.3,.8);
     // cross arms
-    pl(gx-12,top+14,gx+12,top+14,.34,.9);
-    pl(gx-12,top+26,gx+12,top+26,.30,.8);
-    tops.push([gx,top+10]);
+    pl(gx-13,top+13,gx+13,top+13,.36,1);
+    pl(gx-13,top+25,gx+13,top+25,.3,.9);
+    // diagonal brace
+    pl(gx-8,top+25,gx,top+13,.2,.6,2);
+    // insulators
+    for(const ox of[-11,11]){ toneEllipse(gx+ox,top+11,1.6,2,.3); toneEllipse(gx+ox,top+23,1.6,2,.25); }
+    // base stones
+    toneEllipse(gx+3,gy+1,4,1.6,.12); toneEllipse(gx-4,gy+2,3,1.3,.1);
+    tops.push([gx,top]);
   }
-  // wires sag between tops
-  ctx.save(); ctx.globalAlpha=.28; ctx.strokeStyle=INKM; ctx.lineWidth=.6; ctx.lineCap='round';
+  ctx.save(); ctx.globalAlpha=.24; ctx.strokeStyle=INK; ctx.lineWidth=.6; ctx.lineCap='round';
   for(let k=0;k<tops.length-1;k++){
     const a=tops[k], b=tops[k+1];
-    for(const off of [-9,9]){
+    for(const oy of[13,25]){
       ctx.beginPath();
-      ctx.moveTo(a[0],a[1]+ (off<0?4:16));
-      ctx.quadraticCurveTo((a[0]+b[0])/2, Math.max(a[1],b[1])+(off<0?26:40), b[0], b[1]+(off<0?4:16));
+      ctx.moveTo(a[0]-11,a[1]+oy-2);
+      ctx.quadraticCurveTo((a[0]+b[0])/2, Math.max(a[1],b[1])+oy+16, b[0]-11, b[1]+oy-2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(a[0]+11,a[1]+oy-2);
+      ctx.quadraticCurveTo((a[0]+b[0])/2, Math.max(a[1],b[1])+oy+16, b[0]+11, b[1]+oy-2);
       ctx.stroke();
     }
   }
   ctx.restore();
 }
 
-// ── Station ───────────────────────────────────────────────────────────────────
+// ── Station — detailed shelter like the reference ────────────────────────────
 function drawStation(s){
   const gx=SX(s.x), gy=SY(terrainY(s.x));
-  if(gx<-200||gx>canvas.width+200) return;
-  // platform (short, on terrain)
-  const pw=110;
-  ht(gx-pw/2,gy-7,pw,7,.08,4,0); pr(gx-pw/2,gy-7,pw,7,.5,1.1);
+  if(gx<-260||gx>canvas.width+260) return;
+
+  // stone foundation wall under platform
+  const pw=130, ph=10;
+  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle=GRAPHITE; ctx.fillRect(gx-pw/2,gy-ph,pw,ph); ctx.restore();
+  // lumpy stones
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineWidth=.6;
+  for(let st=0; st<Math.floor(pw/13); st++){
+    const sx2=gx-pw/2+6+st*13+rnd(2), sy2=gy-ph/2+rnd(2.5);
+    ctx.globalAlpha=.22+frand()*.12;
+    ctx.beginPath(); ctx.ellipse(sx2,sy2,5+frand()*2,3+frand()*1.4,rnd(.5),0,Math.PI*2); ctx.stroke();
+  }
+  ctx.restore();
+  pl(gx-pw/2,gy-ph,gx+pw/2,gy-ph,.42,1.1);
+
   // shelter
-  const sw=58, sh=42, ry=gy-7-sh;
-  pl(gx-sw/2,gy-7,gx-sw/2,ry,.48,1);
-  pl(gx+sw/2,gy-7,gx+sw/2,ry,.48,1);
-  pl(gx-sw/2-7,ry,gx+sw/2+7,ry,.55,1.4);
-  pl(gx-sw/2-7,ry,gx-sw/2-15,ry-9,.42,.9);
-  pl(gx+sw/2+7,ry,gx+sw/2+15,ry-9,.42,.9);
-  pl(gx-sw/2-15,ry-9,gx+sw/2+15,ry-9,.36,.8);
-  ht(gx-sw/2-15,ry-9,sw+30,9,.06,4,130);
-  // name board
-  pr(gx-sw/2,ry-19,sw,13,.32,.6);
-  ctx.save(); ctx.font='italic 10px Georgia'; ctx.fillStyle=INK; ctx.globalAlpha=.6; ctx.textAlign='center'; ctx.fillText(s.name,gx,ry-9); ctx.restore();
+  const sw=86, sh=58, ry=gy-ph-sh;
+  // posts (doubled, with little braces)
+  for(const px of[gx-sw/2,gx+sw/2]){
+    pl(px-1,gy-ph,px-1,ry,.45,1.1);
+    pl(px+1,gy-ph,px+1,ry,.3,.8);
+    pl(px,ry+10,px+(px<gx?10:-10),ry,.28,.7,2);
+  }
+  // mid posts
+  pl(gx,gy-ph,gx,ry,.3,.9);
+  // beam
+  pl(gx-sw/2-10,ry,gx+sw/2+10,ry,.5,1.5);
+  // roof — shallow gable with brick/tile texture
+  const rh=16, ro=18;
+  ctx.save(); ctx.globalAlpha=.08; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath(); ctx.moveTo(gx-sw/2-ro,ry); ctx.lineTo(gx,ry-rh); ctx.lineTo(gx+sw/2+ro,ry); ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.1; ctx.globalAlpha=.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(gx-sw/2-ro,ry); ctx.lineTo(gx+rnd(2),ry-rh+rnd(1.5)); ctx.lineTo(gx+sw/2+ro,ry); ctx.stroke(); ctx.restore();
+  // tile rows: little arcs along both slopes
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=.5;
+  for(let row=0;row<3;row++){
+    const t=(row+1)/3.6;
+    const yL=ry-rh*(1-t), span=(sw/2+ro)*t;
+    for(let cx2=gx-span;cx2<gx+span;cx2+=7){
+      ctx.globalAlpha=.13+frand()*.08;
+      ctx.beginPath(); ctx.arc(cx2+3.5,yL+rh*t*.55,3.4,Math.PI,0); ctx.stroke();
+    }
+  }
+  ctx.restore();
+  // back wall hint + bench
+  tone(gx-sw/2+4,ry+4,sw-8,sh*.5,.025);
+  pl(gx-sw/2+4,ry+sh*.5+4,gx+sw/2-4,ry+sh*.5+4,.14,.6);
+  // bench
+  pl(gx-20,gy-ph-13,gx+20,gy-ph-13,.4,1.1);
+  pl(gx-17,gy-ph-13,gx-17,gy-ph,.32,.8); pl(gx+17,gy-ph-13,gx+17,gy-ph,.32,.8);
+
+  // name sign hanging from beam
+  pr(gx-sw/2+8,ry-26,sw-16,14,.32,.7);
+  tone(gx-sw/2+8,ry-26,sw-16,14,.02);
+  ctx.save(); ctx.font='italic 10px Georgia'; ctx.fillStyle=INK; ctx.globalAlpha=.55; ctx.textAlign='center';
+  ctx.fillText(s.name,gx,ry-15.5); ctx.restore();
+
   // waiting people
-  for(let k=0;k<s.waiting;k++) drawPerson(gx-pw/2+12+k*13+rnd(2),gy-7,false);
+  for(let k=0;k<s.waiting;k++) drawPerson(gx-pw/2+16+k*14+rnd(2),gy-ph,false);
 }
 
 function drawPerson(x,y,onboard){
-  const h=onboard?16:22, a=onboard?.45:.55;
-  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineWidth=.85;
+  const h=onboard?16:22, a=onboard?.4:.5;
+  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineWidth=.9;
   ctx.beginPath(); ctx.arc(x+rnd(.4),y-h+rnd(.4),3,0,Math.PI*2); ctx.stroke();
-  pl(x,y-h+3,x+rnd(1),y-h*.4,a,.95,2);
-  pl(x-4,y-h*.58,x+4,y-h*.58+rnd(1),a,.8,1);
-  pl(x,y-h*.4,x-3+rnd(1),y,a,.95,2);
-  pl(x,y-h*.4,x+3+rnd(1),y,a,.95,2);
+  // body with slight tone
+  ctx.globalAlpha=a*.4; ctx.lineWidth=2.6;
+  ctx.beginPath(); ctx.moveTo(x,y-h+4); ctx.lineTo(x,y-h*.42); ctx.stroke();
+  ctx.globalAlpha=a; ctx.lineWidth=.9;
+  ctx.beginPath(); ctx.moveTo(x,y-h+3); ctx.lineTo(x+rnd(1),y-h*.4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x-4,y-h*.58); ctx.lineTo(x+4,y-h*.58+rnd(1)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y-h*.4); ctx.lineTo(x-3+rnd(1),y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x,y-h*.4); ctx.lineTo(x+3+rnd(1),y); ctx.stroke();
   ctx.restore();
 }
 
-// ── Track (follows terrain) ─────────────────────────────────────────────────
+// ── Track ─────────────────────────────────────────────────────────────────────
 function drawTrack(){
   const W=canvas.width;
-  // two rails offset vertically, sleepers perpendicular to slope
-  ctx.save();
+  // ballast tone band
+  ctx.save(); ctx.globalAlpha=.03; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath();
+  for(let px=-30;px<=W+30;px+=10){ const y=SY(terrainY(camX+px)); px===-30?ctx.moveTo(px,y-2):ctx.lineTo(px,y-2); }
+  for(let px=W+30;px>=-30;px-=10){ ctx.lineTo(px,SY(terrainY(camX+px))+16); }
+  ctx.closePath(); ctx.fill(); ctx.restore();
+
   // sleepers
-  const sp=18;
-  for(let wx=Math.floor((camX-40)/sp)*sp; wx<camX+W+40; wx+=sp){
+  const sp=18, s0=Math.floor((camX-40)/sp)*sp;
+  for(let wx=s0; wx<camX+W+40; wx+=sp){
+    srand(wx*2.3);
     const gx=SX(wx), gy=SY(terrainY(wx));
-    const sl=slopeAt(wx), ang=Math.atan(sl);
-    const nx=Math.sin(ang), ny=-Math.cos(ang); // normal
-    pl(gx-nx*9, gy+2-ny*9, gx+nx*9, gy+2+ny*9, .26,2.4,1);
+    const ang=Math.atan(slopeAt(wx));
+    const nx=Math.sin(ang), ny=-Math.cos(ang);
+    pl(gx-nx*9,gy+2-ny*9,gx+nx*9,gy+2+ny*9,.22,2.4,1);
   }
-  // rails
+  // rails — heavier, with light second pass
   for(const off of [3,11]){
-    ctx.globalAlpha=.55; ctx.strokeStyle=INK; ctx.lineWidth=1.2; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.save(); ctx.strokeStyle=INK; ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.globalAlpha=.5; ctx.lineWidth=1.4;
     ctx.beginPath();
-    for(let px=-30;px<=W+30;px+=6){ const wx=camX+px; const y=SY(terrainY(wx))+off; px===-30?ctx.moveTo(px,y):ctx.lineTo(px+rnd(.3),y+rnd(.3)); }
+    const step=8, start=Math.floor(camX/step)*step;
+    for(let wx=start-step;wx<=camX+W+step;wx+=step){
+      srand(wx+off*97);
+      const px=SX(wx), y=SY(terrainY(wx))+off;
+      wx===start-step?ctx.moveTo(px,y):ctx.lineTo(px+rnd(.4),y+rnd(.4));
+    }
     ctx.stroke();
+    ctx.globalAlpha=.1; ctx.lineWidth=3; ctx.stroke();
+    ctx.restore();
   }
-  ctx.restore();
 }
 
-// ── Tram: SSB DT 8.12 (drawn in local space, tilts with slope) ───────────────
+// ── Tram ──────────────────────────────────────────────────────────────────────
 function drawTram(){
   const gx=SX(tramX), gy=SY(terrainY(tramX));
   const ang=Math.atan(slopeAt(tramX));
   ctx.save();
   ctx.translate(gx,gy);
   ctx.rotate(ang);
+  srand(4242);
   drawDoppel();
   ctx.restore();
 }
 
-// Doppeltriebwagen (SSB DT8): two coupled single-ended cars, cabs at the
-// outer ends, close-coupled in the middle. Local origin = rail contact (y=0).
+// Doppeltriebwagen: two coupled single-ended cars, cabs outward
 function drawDoppel(){
-  const carL=168, gap=12;             // each car length + center coupling gap
-  const L=carL*2+gap;
-  const half=L/2;
+  const carL=178, gap=12;
+  const L=carL*2+gap, half=L/2;
   const wheelR=11;
   const bodyBot=-wheelR-6;
-  const bodyTop=bodyBot-78;
+  const bodyTop=bodyBot-82;
   const TH=bodyBot-bodyTop;
 
-  const c1L=-half,      c1R=-gap/2;    // left car spans
-  const c2L= gap/2,     c2R= half;     // right car spans
+  const c1L=-half, c1R=-gap/2;
+  const c2L= gap/2, c2R= half;
 
-  // shadow
-  ctx.save(); ctx.globalAlpha=.06; ctx.fillStyle='#000';
-  ctx.beginPath(); ctx.ellipse(0,2,half*0.94,5,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+  // ground shadow
+  ctx.save(); ctx.globalAlpha=.07; ctx.fillStyle=GRAPHITE;
+  ctx.beginPath(); ctx.ellipse(0,3,half*0.96,5.5,0,0,Math.PI*2); ctx.fill(); ctx.restore();
 
-  // center coupling between the two cars
   drawCoupling(c1R,c2L,bodyTop,bodyBot,TH);
-
-  // the two cars (cab at outer end)
-  drawCar(c1L,c1R,bodyTop,bodyBot,TH,wheelR,false); // left car, cab on far left
-  drawCar(c2L,c2R,bodyTop,bodyBot,TH,wheelR,true);  // right car, cab on far right
+  drawCar(c1L,c1R,bodyTop,bodyBot,TH,wheelR,false);
+  drawCar(c2L,c2R,bodyTop,bodyBot,TH,wheelR,true);
 }
 
-// one motor car. cabOuterRight=true → cab is at the right end (nose points right)
-function drawCar(L,R,top,bot,TH,wheelR,cabOuterRight){
+function drawCar(L,R,top,bot,TH,wheelR,cabRight){
   const W=R-L;
-  const noseX = cabOuterRight ? R : L;   // outer end (cab)
-  const innerX= cabOuterRight ? L : R;   // inner end (coupled)
-  const dir   = cabOuterRight ? 1 : -1;  // points outward
+  const noseX = cabRight ? R : L;
+  const dir   = cabRight ? 1 : -1;
 
-  // ── body fill faint ──
-  ctx.save(); ctx.globalAlpha=.07; ctx.fillStyle='#cfcabd';
-  carBodyPath(L,R,top,bot,cabOuterRight); ctx.fill(); ctx.restore();
+  // body tone: light overall + darker skirt + roof shade
+  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle=GRAPHITE;
+  carBodyPath(L,R,top,bot,cabRight); ctx.fill(); ctx.restore();
+  tone(L+3,bot-TH*.16,W-6,TH*.16,.07);            // skirt band
+  tone(L+3,top,W-6,TH*.08,.05);                    // under-roof shade
 
-  // ── roof equipment + pantograph ──
-  const roofH=8;
-  pr(L+W*0.12,top-roofH,W*0.76,roofH,.2,.7);
-  for(const bx of [L+W*0.3,L+W*0.55]) pr(bx-9,top-roofH+1,18,roofH-2,.18,.6);
-  drawPanto(cabOuterRight? L+W*0.34 : R-W*0.34, top-roofH);
+  // roof equipment
+  const roofH=9;
+  tone(L+W*.12,top-roofH,W*.76,roofH,.05);
+  pr(L+W*.12,top-roofH,W*.76,roofH,.22,.7);
+  for(const bx of [L+W*.3,L+W*.55]){ tone(bx-9,top-roofH+1.5,18,roofH-3,.07); pr(bx-9,top-roofH+1.5,18,roofH-3,.18,.6); }
+  drawPanto(cabRight? L+W*.34 : R-W*.34, top-roofH);
 
-  // ── window band ──
-  const winTop=top+TH*0.16, winBot=top+TH*0.58;
-  const wbL = cabOuterRight ? L+6 : L+W*0.18;
-  const wbR = cabOuterRight ? R-W*0.18 : R-6;
-  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle='#9bbccc'; ctx.fillRect(wbL,winTop,wbR-wbL,winBot-winTop); ctx.restore();
-  ln(wbL,winTop,wbR,winTop,.42,.9);
-  ln(wbL,winBot,wbR,winBot,.42,.9);
+  // window band — dark panes (reads like the real tram)
+  const winTop=top+TH*0.15, winBot=top+TH*0.56;
+  const wbL = cabRight ? L+7 : L+W*0.20;
+  const wbR = cabRight ? R-W*0.20 : R-7;
+  tone(wbL,winTop,wbR-wbL,winBot-winTop,.13);
+  ln(wbL,winTop,wbR,winTop,.45,1);
+  ln(wbL,winBot,wbR,winBot,.45,1);
+  // mullions
+  for(let m=1;m<5;m++){ const mxp=wbL+(wbR-wbL)*m/5; ln(mxp,winTop,mxp,winBot,.3,.8); }
+  // glass glints
+  ctx.save(); ctx.globalAlpha=.1; ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+  for(let g=0;g<3;g++){ const gx2=wbL+(wbR-wbL)*(0.18+g*0.3); ctx.beginPath(); ctx.moveTo(gx2,winBot-3); ctx.lineTo(gx2+10,winTop+3); ctx.stroke(); }
+  ctx.restore();
 
-  // ── doors (3 per car) ──
-  const dInset = cabOuterRight ? 0.16 : 0.30;
-  const doorPos=[L+W*0.30, L+W*0.55, L+W*0.80];
-  for(const dx of doorPos) drawDoor(dx-9,top+TH*0.12,18,TH*0.74);
+  // doors (3) — slightly darker panels with center split
+  for(const dx of [L+W*0.32, L+W*0.56, L+W*0.80]) drawDoor(dx-9,top+TH*0.12,18,TH*0.76);
 
-  // ── window mullions ──
-  for(let m=0;m<4;m++){ const mxp=wbL+(wbR-wbL)*(0.15+m*0.23); ln(mxp,winTop,mxp,winBot,.2,.55); }
-
-  // ── passengers ──
+  // passengers
   const slots=Math.floor((wbR-wbL)/26);
-  for(let p=0;p<slots;p++){ if(p<pax/4) drawPersonLocal(wbL+16+p*26,winBot-1); }
+  for(let p=0;p<slots;p++){ if(p<pax/4) drawPerson(wbL+16+p*26,winBot-1,true); }
 
-  // ── cab at outer end ──
+  // cab
   drawCab(noseX,dir,top,bot,TH);
 
-  // ── outline ──
-  ctx.save(); ctx.globalAlpha=.78; ctx.strokeStyle=INK; ctx.lineWidth=1.8; ctx.lineCap='round'; ctx.lineJoin='round';
-  carBodyPath(L,R,top,bot,cabOuterRight); ctx.stroke();
-  ctx.globalAlpha=.1; ctx.lineWidth=4; ctx.stroke();
+  // crisp outline
+  ctx.save(); ctx.globalAlpha=.72; ctx.strokeStyle=INK; ctx.lineWidth=1.9; ctx.lineCap='round'; ctx.lineJoin='round';
+  carBodyPath(L,R,top,bot,cabRight); ctx.stroke();
+  ctx.globalAlpha=.1; ctx.lineWidth=4.5; ctx.stroke();
   ctx.restore();
 
-  // ── waist stripe ──
-  ln(L+W*0.1,top+TH*0.63,R-W*0.1,top+TH*0.63,.18,.6);
+  // waist line
+  ln(L+W*.08,top+TH*.62,R-W*.08,top+TH*.62,.2,.7);
+  // skirt top line
+  ln(L+W*.05,bot-TH*.16,R-W*.05,bot-TH*.16,.25,.7);
 
-  // ── bogies (2 per car) ──
-  drawBogie(L+W*0.24,wheelR);
-  drawBogie(R-W*0.24,wheelR);
+  // bogies
+  drawBogie(L+W*.24,wheelR);
+  drawBogie(R-W*.24,wheelR);
 
-  // ── SSB lettering near the cab ──
-  ctx.save(); ctx.globalAlpha=.4; ctx.fillStyle=INK; ctx.font='bold 12px Georgia';
-  ctx.textAlign = cabOuterRight ? 'right' : 'left';
-  ctx.fillText('SSB', cabOuterRight? R-W*0.16 : L+W*0.16, top+TH*0.50);
+  // SSB
+  ctx.save(); ctx.globalAlpha=.42; ctx.fillStyle=INK; ctx.font='bold 12px Georgia';
+  ctx.textAlign=cabRight?'right':'left';
+  ctx.fillText('SSB', cabRight? R-W*.13 : L+W*.13, bot-TH*.2);
   ctx.restore();
 }
 
-// body outline: rounded roof corners, wedge nose at the cab (outer) end,
-// blunt vertical inner end
-function carBodyPath(L,R,top,bot,cabOuterRight){
-  const nose=14;
+function carBodyPath(L,R,top,bot,cabRight){
+  const nose=15;
   ctx.beginPath();
-  if(cabOuterRight){
-    // inner = left (blunt), cab = right (wedge)
-    ctx.moveTo(L, top+6);
-    ctx.quadraticCurveTo(L, top, L+8, top);
-    ctx.lineTo(R-nose, top);
-    ctx.quadraticCurveTo(R, top, R+2, top+18);     // cab top corner
-    ctx.lineTo(R+2, bot-10);
-    ctx.quadraticCurveTo(R+2, bot, R-8, bot);        // cab lower apron
-    ctx.lineTo(L+2, bot);
-    ctx.quadraticCurveTo(L, bot, L, bot-8);
+  if(cabRight){
+    ctx.moveTo(L,top+6);
+    ctx.quadraticCurveTo(L,top,L+8,top);
+    ctx.lineTo(R-nose,top);
+    ctx.quadraticCurveTo(R,top,R+2,top+19);
+    ctx.lineTo(R+2,bot-10);
+    ctx.quadraticCurveTo(R+2,bot,R-8,bot);
+    ctx.lineTo(L+2,bot);
+    ctx.quadraticCurveTo(L,bot,L,bot-8);
     ctx.closePath();
   } else {
-    // cab = left (wedge), inner = right (blunt)
-    ctx.moveTo(L+nose, top);
-    ctx.lineTo(R-8, top);
-    ctx.quadraticCurveTo(R, top, R, top+6);
-    ctx.lineTo(R, bot-8);
-    ctx.quadraticCurveTo(R, bot, R-2, bot);
-    ctx.lineTo(L+8, bot);
-    ctx.quadraticCurveTo(L-2, bot, L-2, bot-10);     // cab lower apron
-    ctx.lineTo(L-2, top+18);
-    ctx.quadraticCurveTo(L, top, L+nose, top);       // cab top corner
+    ctx.moveTo(L+nose,top);
+    ctx.lineTo(R-8,top);
+    ctx.quadraticCurveTo(R,top,R,top+6);
+    ctx.lineTo(R,bot-8);
+    ctx.quadraticCurveTo(R,bot,R-2,bot);
+    ctx.lineTo(L+8,bot);
+    ctx.quadraticCurveTo(L-2,bot,L-2,bot-10);
+    ctx.lineTo(L-2,top+19);
+    ctx.quadraticCurveTo(L,top,L+nose,top);
     ctx.closePath();
   }
 }
 
-// cab/nose at outer end. dir=+1 nose points right, -1 points left
 function drawCab(noseX,dir,top,bot,TH){
-  const sw=46; // cab depth
-  // windshield
-  const wsW=sw*0.62;
-  const wsNear = noseX - dir*(sw*0.10);
-  const wsFar  = wsNear - dir*wsW;
+  const sw=48;
+  // windshield — dark angled pane
+  const wsW=sw*.6;
+  const wsNear=noseX-dir*sw*.1, wsFar=wsNear-dir*wsW;
   const wsL=Math.min(wsNear,wsFar), wsR=Math.max(wsNear,wsFar);
-  const wsTop=top+TH*0.10, wsBot=top+TH*0.46;
-  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle='#9bbccc'; ctx.fillRect(wsL,wsTop,wsR-wsL,wsBot-wsTop); ctx.restore();
-  pr(wsL,wsTop,wsR-wsL,wsBot-wsTop,.55,1);
+  const wsTop=top+TH*.10, wsBot=top+TH*.46;
+  tone(wsL,wsTop,wsR-wsL,wsBot-wsTop,.13);
+  pr(wsL,wsTop,wsR-wsL,wsBot-wsTop,.5,1);
   ln((wsL+wsR)/2,wsTop,(wsL+wsR)/2,wsBot,.25,.6);
+  // glint
+  ctx.save(); ctx.globalAlpha=.12; ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(wsL+4,wsBot-3); ctx.lineTo(wsL+(wsR-wsL)*.5,wsTop+3); ctx.stroke(); ctx.restore();
   // destination display
-  const ddW=sw*0.7, ddNear=noseX-dir*sw*0.05, ddFar=ddNear-dir*ddW;
+  const ddW=sw*.72, ddNear=noseX-dir*sw*.04, ddFar=ddNear-dir*ddW;
   const ddL=Math.min(ddNear,ddFar);
-  pr(ddL,top+3,ddW,TH*0.09,.45,.8);
-  ctx.save(); ctx.font='bold 8px Georgia'; ctx.fillStyle=INK; ctx.globalAlpha=.5; ctx.textAlign='center';
-  ctx.fillText('U6 '+destName.substring(0,8),ddL+ddW/2,top+3+TH*0.075); ctx.restore();
-  // headlights (two stacked round)
-  const hlX=noseX+dir*5, hlY=top+TH*0.74;
+  tone(ddL,top+3,ddW,TH*.085,.1);
+  pr(ddL,top+3,ddW,TH*.085,.4,.7);
+  ctx.save(); ctx.font='bold 8px Georgia'; ctx.fillStyle=INK; ctx.globalAlpha=.55; ctx.textAlign='center';
+  ctx.fillText('U6 '+destName.substring(0,8),ddL+ddW/2,top+3+TH*.068); ctx.restore();
+  // headlights
+  const hlX=noseX+dir*5, hlY=top+TH*.74;
   ctx.save(); ctx.globalAlpha=.5; ctx.strokeStyle=INK; ctx.lineWidth=1;
   ctx.beginPath(); ctx.arc(hlX,hlY,4,0,Math.PI*2); ctx.stroke();
-  ctx.beginPath(); ctx.arc(hlX,hlY-TH*0.14,2.4,0,Math.PI*2); ctx.stroke(); ctx.restore();
-  // coupler at nose tip
-  ln(noseX+dir*1,bot-6,noseX+dir*7,bot-6,.5,1.6);
-}
-
-function drawCoupling(x1,x2,top,bot,TH){
-  const cy=top+TH*0.6;
-  ln(x1,cy,x2,cy,.5,1.8);
-  ln((x1+x2)/2,cy-5,(x1+x2)/2,cy+5,.4,1.2);
-  // bellows hint on each inner face
-  ln(x1,top+6,x1,bot-4,.3,.7);
-  ln(x2,top+6,x2,bot-4,.3,.7);
+  ctx.beginPath(); ctx.arc(hlX,hlY,1.6,0,Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(hlX,hlY-TH*.14,2.5,0,Math.PI*2); ctx.stroke(); ctx.restore();
+  // coupler + apron detail
+  ln(noseX+dir*1,bot-6,noseX+dir*8,bot-6,.5,1.7);
+  tone(Math.min(noseX,noseX+dir*8),bot-8,8,4,.1);
+  // mirror nub
+  ln(noseX+dir*2,top+TH*.18,noseX+dir*7,top+TH*.16,.3,.9);
 }
 
 function drawDoor(dx,dy,dw,dh){
   if(doorsOpen){
-    ln(dx-3,dy,dx-3,dy+dh*0.12,.45,1);
-    ln(dx+dw+3,dy,dx+dw+3,dy+dh*0.12,.45,1);
-    ht(dx,dy,dw,dh,.03,5,90);
+    ln(dx-3,dy,dx-3,dy+dh*.12,.4,1);
+    ln(dx+dw+3,dy,dx+dw+3,dy+dh*.12,.4,1);
+    tone(dx,dy,dw,dh,.03);
   } else {
-    ht(dx,dy,dw,dh,.07,6,90);
-    pr(dx,dy,dw,dh,.55,1);
-    ln(dx+dw/2,dy+2,dx+dw/2,dy+dh-2,.3,.7);
-    ctx.save(); ctx.globalAlpha=.3; ctx.strokeStyle=INK; ctx.lineWidth=.6; ctx.beginPath(); ctx.arc(dx+dw/2,dy+dh*.5,2,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    tone(dx,dy,dw,dh,.09);
+    pr(dx,dy,dw,dh,.5,1);
+    ln(dx+dw/2,dy+2,dx+dw/2,dy+dh-2,.32,.7);
+    // small window in door
+    tone(dx+2.5,dy+3,dw-5,dh*.3,.1);
+    pr(dx+2.5,dy+3,dw-5,dh*.3,.25,.5);
   }
 }
 
-function drawJoint(x,top,bot){
-  const jw=6, jx=x-jw/2;
-  ctx.save(); ctx.globalAlpha=.4; ctx.strokeStyle=INK; ctx.lineWidth=.7; ctx.lineCap='round';
-  const H=bot-top;
-  for(let z=0;z<5;z++){ const zy=top+H*0.14+z*(H*0.7/5); ctx.beginPath(); ctx.moveTo(jx,zy); ctx.lineTo(jx+jw,zy+H*0.07); ctx.lineTo(jx,zy+H*0.14); ctx.stroke(); }
-  ctx.restore();
-  ln(jx,top+5,jx,bot-3,.22,.6); ln(jx+jw,top+5,jx+jw,bot-3,.22,.6);
+function drawCoupling(x1,x2,top,bot,TH){
+  const cy=top+TH*.6;
+  ln(x1,cy,x2,cy,.5,1.9);
+  ln((x1+x2)/2,cy-5,(x1+x2)/2,cy+5,.4,1.2);
+  ln(x1,top+6,x1,bot-4,.3,.7);
+  ln(x2,top+6,x2,bot-4,.3,.7);
+  // bellows shading
+  tone(x1,top+8,x2-x1,bot-top-14,.05);
 }
 
 function drawPanto(cx,roofY){
-  const topY=roofY-26;
-  ln(cx-12,roofY,cx-3,topY+6,.5,1);
-  ln(cx+12,roofY,cx+3,topY+6,.5,1);
-  ln(cx-3,topY+6,cx+3,topY+6,.55,1.2);
-  ln(cx-14,roofY,cx+14,roofY,.38,.9);
-  ln(cx,topY+6,cx,topY,.3,.7);
+  const topY=roofY-27;
+  ln(cx-12,roofY,cx-3,topY+7,.46,1);
+  ln(cx+12,roofY,cx+3,topY+7,.46,1);
+  ln(cx-3,topY+7,cx+3,topY+7,.52,1.2);
+  ln(cx-14,roofY,cx+14,roofY,.36,.9);
+  ln(cx-5,topY,cx+5,topY,.4,1);
+  ln(cx,topY+7,cx,topY,.3,.7);
 }
 
 function drawBogie(cx,wr){
-  const tr=22;
-  ctx.save(); ctx.globalAlpha=.7; ctx.strokeStyle=INK; ctx.lineWidth=1.3; ctx.lineCap='round';
-  ln(cx-tr/2-wr,-wr-2,cx+tr/2+wr,-wr-2,.4,1.6);
+  const tr=24;
+  // frame tone
+  tone(cx-tr/2-wr,-wr-7,tr+wr*2,6,.09);
+  ctx.save(); ctx.globalAlpha=.65; ctx.strokeStyle=INK; ctx.lineWidth=1.3; ctx.lineCap='round';
+  ln(cx-tr/2-wr,-wr-2,cx+tr/2+wr,-wr-2,.42,1.7);
   for(const wx of [cx-tr/2,cx+tr/2]){
+    // wheel: dark disc + rim
+    toneEllipse(wx,0,wr*.92,wr*.92,.14);
     ctx.beginPath(); ctx.arc(wx,0,wr,0,Math.PI*2); ctx.stroke();
-    for(let s=0;s<3;s++){ const a=s*Math.PI/3; ln(wx+Math.cos(a)*wr*.6,Math.sin(a)*wr*.6,wx-Math.cos(a)*wr*.6,-Math.sin(a)*wr*.6,.22,.5); }
-    ctx.save(); ctx.globalAlpha=.35; ctx.beginPath(); ctx.arc(wx,0,wr*.22,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    ctx.save(); ctx.globalAlpha=.3; ctx.beginPath(); ctx.arc(wx,0,wr*.55,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    ctx.save(); ctx.globalAlpha=.4; ctx.beginPath(); ctx.arc(wx,0,wr*.2,0,Math.PI*2); ctx.stroke(); ctx.restore();
+  }
+  // suspension marks
+  for(const wx of [cx-tr/2,cx+tr/2]){
+    for(let s=0;s<3;s++) ln(wx-3,-wr-4-s*3,wx+3,-wr-2-s*3,.18,.6);
   }
   ctx.restore();
 }
 
-function drawPersonLocal(x,y){ // passenger silhouette inside (local coords)
-  const h=15, a=.4;
-  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineWidth=.8; ctx.lineCap='round';
-  ctx.beginPath(); ctx.arc(x,y-h,2.6,0,Math.PI*2); ctx.stroke();
-  ln(x,y-h+2.6,x,y-h*.45,a,.9);
-  ln(x,y-h*.45,x-2.5,y,a,.9); ln(x,y-h*.45,x+2.5,y,a,.9);
-  ctx.restore();
-}
-
-// ── Foreground (fast, subtle) ─────────────────────────────────────────────────
+// ── Foreground grass (fast parallax) ─────────────────────────────────────────
 function drawForeground(){
   const W=canvas.width,H=canvas.height;
-  const sp=70, pcx=camX*1.25;
-  ctx.save(); ctx.globalAlpha=.16; ctx.strokeStyle=INK; ctx.lineWidth=.6; ctx.lineCap='round';
+  const sp=80, pcx=camX*1.25;
   for(let wx=Math.floor((pcx-sp)/sp)*sp; wx<pcx+W+sp; wx+=sp){
+    srand(wx*.91);
     const x=wx-pcx;
-    for(let b=0;b<3;b++){ const bx=x+rnd(14); ctx.beginPath(); ctx.moveTo(bx,H); ctx.quadraticCurveTo(bx+rnd(6),H-18,bx+rnd(10)-3,H-30-Math.random()*14); ctx.stroke(); }
+    ctx.save(); ctx.globalAlpha=.13; ctx.strokeStyle=INK; ctx.lineWidth=.7; ctx.lineCap='round';
+    const n=2+Math.floor(frand()*3);
+    for(let b=0;b<n;b++){
+      const bx=x+rnd(20);
+      ctx.beginPath(); ctx.moveTo(bx,H+2);
+      ctx.quadraticCurveTo(bx+rnd(8),H-20,bx+rnd(14)-4,H-34-frand()*16);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
-  ctx.restore();
 }
 
 requestAnimationFrame(loop);
