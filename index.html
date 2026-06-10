@@ -23,7 +23,7 @@ canvas { display:block; position:fixed; top:0; left:0; }
   <span id="h-pax">0 Fahrgäste</span>
 </div>
 <div id="zone"></div>
-<div id="keys">← → halten / fahren</div>
+<div id="keys">← rückwärts / bremsen &nbsp; → vorwärts<br>gedrückt halten · an Haltestellen bremsen</div>
 <div id="dist">0.0 km</div>
 <script>
 "use strict";
@@ -124,10 +124,15 @@ function ridgeY(x,seed){
 }
 
 // ── World state ───────────────────────────────────────────────────────────────
-let tramX=0, speed=0, dist=0;
-const MAXS=300, ACC=120, BRK=240; // px/s
+// Short-Trip-style momentum physics: hold ←/→ to apply engine force,
+// gravity pulls you down hills, drag + rolling resistance slow you.
+let tramX=0, vel=0, dist=0;        // vel = signed horizontal speed (px/s)
+const ENGINE=150;                  // engine acceleration (px/s^2)
+const GRAVITY=330;                 // gravity along slope
+const DRAG=0.7;                    // exponential air/rolling drag
+const ROLL=28;                     // constant rolling resistance
 let camX=0, camY=0;
-let autobrake=false, doorsOpen=false, doorT=0, boardT=0, pax=0, stoppedAt=null;
+let doorsOpen=false, doorT=0, boardT=0, pax=0, stoppedAt=null;
 
 const stnNames=[
   'Hauptbahnhof','Stadtmitte','Marktplatz','Charlottenplatz','Olgaeck',
@@ -140,8 +145,8 @@ const stnNames=[
 ];
 const stations=[];
 let sxw=900;
-for(let i=0;i<400;i++){ sxw+=1100+Math.random()*900; stations.push({x:sxw,name:stnNames[i%stnNames.length],waiting:Math.floor(Math.random()*7)+1,served:false}); }
-let nsi=0;
+for(let i=0;i<2000;i++){ sxw+=900+Math.random()*800; stations.push({x:sxw,name:stnNames[i%stnNames.length],waiting:Math.floor(Math.random()*7)+1,served:false}); }
+let destName='Hauptbahnhof';
 
 // scenery seeds
 const scenery=[];
@@ -182,46 +187,67 @@ function loop(ts){
 }
 
 function update(dt){
-  const z=zones[Math.floor(tramX/22000)%zones.length];
+  const z=zones[Math.floor(Math.max(0,tramX)/22000)%zones.length];
   if(z!==lastZone){ lastZone=z; zoneEl.textContent=z; zoneEl.style.opacity='.7'; clearTimeout(update._zt); update._zt=setTimeout(()=>zoneEl.style.opacity='0',2400); }
-
-  while(nsi<stations.length-1&&stations[nsi].served) nsi++;
-  const ns=stations[nsi];
-  const d=ns.x-tramX;
-  const bd=(speed*speed)/(2*BRK)+60;
-  autobrake = d<bd && d>-25 && !stoppedAt;
-
-  if(d<=0 && !stoppedAt && speed<6){ speed=0; stoppedAt=ns; doorsOpen=false; doorT=.5; boardT=2.8; }
-  if(stoppedAt){
-    doorT-=dt; if(doorT<=0&&!doorsOpen) doorsOpen=true;
-    if(doorsOpen){ boardT-=dt; if(boardT<=0){ pax=Math.max(0,pax-Math.floor(Math.random()*4+1)); pax=Math.min(42,pax+Math.min(stoppedAt.waiting,42-pax)); stoppedAt.waiting=0; stoppedAt.served=true; stoppedAt=null; doorsOpen=false; } }
-  }
 
   const left = keys.ArrowLeft||keys.KeyA||keys._left;
   const right= keys.ArrowRight||keys.KeyD||keys._right;
+
+  // ── Physics (Short Trip style) ──
   if(!stoppedAt){
-    if(left) speed=Math.max(0,speed-BRK*dt);
-    else if(autobrake) speed=Math.max(0,speed-BRK*dt);
-    else if(right) speed=Math.min(MAXS,speed+ACC*dt);
-    else speed=Math.min(MAXS*.55,speed+ACC*.35*dt); // gentle auto-coast
+    const slope=slopeAt(tramX);
+    const theta=Math.atan(slope);
+    // engine force from player input
+    let a = 0;
+    if(right) a += ENGINE;
+    if(left)  a -= ENGINE;
+    // gravity along slope: positive slope (downhill to the right) accelerates +x
+    a += GRAVITY*Math.sin(theta);
+    vel += a*dt;
+    // exponential drag
+    vel *= Math.exp(-DRAG*dt);
+    // constant rolling resistance opposing motion
+    if(Math.abs(vel)>0.01){ const rr=ROLL*dt; vel += (vel>0?-1:1)*Math.min(rr,Math.abs(vel)); }
+    // static rest: snap to 0 on near-flat ground when idle & slow
+    if(!left&&!right&&Math.abs(vel)<5&&Math.abs(GRAVITY*Math.sin(theta))<ROLL) vel=0;
+
+    tramX += vel*dt;
+    dist  += Math.abs(vel)*dt;
+  } else {
+    vel=0;
   }
-  // slope affects speed slightly (gravity feel)
-  const sl=slopeAt(tramX);
-  if(!stoppedAt) speed=Math.max(0,Math.min(MAXS,speed - sl*40*dt*60*0));
 
-  tramX+=speed*dt; dist+=speed*dt;
+  // ── Station stop & boarding (player must brake to stop) ──
+  if(!stoppedAt && Math.abs(vel)<7){
+    // find an un-served station the tram is sitting at
+    let i=lowerBound(stations,tramX-60);
+    for(; i<stations.length; i++){
+      const s=stations[i]; if(s.x>tramX+60) break;
+      if(!s.served && Math.abs(s.x-tramX)<42){ stoppedAt=s; vel=0; doorsOpen=false; doorT=.5; boardT=2.6; break; }
+    }
+  }
+  if(stoppedAt){
+    doorT-=dt; if(doorT<=0&&!doorsOpen) doorsOpen=true;
+    if(doorsOpen){ boardT-=dt; if(boardT<=0){ pax=Math.max(0,pax-Math.floor(Math.random()*4+1)); pax=Math.min(48,pax+Math.min(stoppedAt.waiting,48-pax)); stoppedAt.waiting=0; stoppedAt.served=true; doorsOpen=false; stoppedAt=null; } }
+    // allow driving away the moment a key is pressed even mid-board
+    if((left||right)&&!doorsOpen){ stoppedAt=null; }
+  }
 
-  // camera: keep tram at fixed screen anchor, follow terrain vertically (smooth)
-  const targetCamX = tramX - canvas.width*0.36;
+  // next station ahead (for HUD)
+  let ahead=null;
+  { let i=lowerBound(stations,tramX); ahead = stations[Math.min(i,stations.length-1)]; }
+  destName = ahead?ahead.name:'—';
+
+  // camera
+  camX = tramX - canvas.width*0.36;
   const targetCamY = terrainY(tramX) - canvas.height*0.60;
-  camX = targetCamX;
   camY += (targetCamY-camY)*Math.min(1,dt*4);
 
   for(const b of birds){ b.x+=b.spd*dt; b.flap+=dt*3; if(b.x-camX>canvas.width+200) b.x-=22000; }
   for(const c of clouds){ c.x-=dt*6; if(c.x-camX< -400) c.x+=30000; }
 
-  document.getElementById('h-speed').textContent=Math.round(speed*0.235/5)*5+' km/h';
-  document.getElementById('h-station').textContent='→ '+ns.name+(d<400?' ·':'');
+  document.getElementById('h-speed').textContent=Math.round(Math.abs(vel)*0.235/5)*5+' km/h';
+  document.getElementById('h-station').textContent='→ '+(ahead?ahead.name:'—')+(ahead&&Math.abs(ahead.x-tramX)<300?' ·':'');
   document.getElementById('h-pax').textContent=pax+' Fahrgäste';
   distEl.textContent=(dist/1000).toFixed(2)+' km';
 }
@@ -273,8 +299,8 @@ function draw(){
   drawPoles();
 
   // stations
-  for(let k=Math.max(0,nsi-2); k<stations.length; k++){
-    const s=stations[k]; if(s.x>x1) break; if(s.x<x0) continue;
+  for(let k=lowerBound(stations,x0); k<stations.length; k++){
+    const s=stations[k]; if(s.x>x1) break;
     drawStation(s);
   }
 
@@ -372,17 +398,26 @@ function drawPine(x,gy,h){
 }
 function drawTree(x,gy,h){
   const a=.5;
-  pl(x-2,gy,x-1,gy-h*.4,a,1.4);
-  pl(x+2,gy,x+1,gy-h*.4,a*.7,.9);
-  const cy=gy-h*.4-h*.3, rx=h*.32, ry=h*.32;
-  // soft scribble canopy: a few overlapping wobbly arcs
+  pl(x-2,gy,x-1,gy-h*.42,a,1.4);
+  pl(x+2,gy,x+1,gy-h*.42,a*.7,.9);
+  const cy=gy-h*.42-h*.30, rx=h*.34, ry=h*.34;
+  // filled canopy: outline + interior hatch so it reads as foliage, not a ring
+  ht(x-rx,cy-ry,rx*2,ry*2,.05,5,40);
+  ht(x-rx,cy-ry,rx*2,ry*2,.04,5,130);
   ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineWidth=1; ctx.lineCap='round';
-  for(let lobe=0;lobe<3;lobe++){
-    const ox=rnd(rx*.6), oy=rnd(ry*.4);
-    ctx.beginPath();
-    for(let s=0;s<=14;s++){const ang=(s/14)*Math.PI*2; const px=x+ox+Math.cos(ang)*rx*.6+rnd(1.4), py=cy+oy+Math.sin(ang)*ry*.6+rnd(1.4); s?ctx.lineTo(px,py):ctx.moveTo(px,py);}
-    ctx.stroke();
+  // bumpy canopy outline (single closed lumpy shape)
+  ctx.beginPath();
+  const lobes=9;
+  for(let s=0;s<=lobes*3;s++){
+    const ang=(s/(lobes*3))*Math.PI*2;
+    const bump=1+0.18*Math.sin(ang*lobes)+rnd(.08);
+    const px=x+Math.cos(ang)*rx*bump, py=cy+Math.sin(ang)*ry*bump+rnd(1);
+    s?ctx.lineTo(px,py):ctx.moveTo(px,py);
   }
+  ctx.closePath(); ctx.stroke();
+  // a few interior scribble strokes
+  ctx.globalAlpha=a*.4;
+  for(let s=0;s<5;s++){ const aa=Math.random()*Math.PI*2,rr=Math.random()*rx*.6; ctx.beginPath(); ctx.moveTo(x+Math.cos(aa)*rr,cy+Math.sin(aa)*rr); ctx.lineTo(x+Math.cos(aa)*rr+rnd(5),cy+Math.sin(aa)*rr+rnd(5)); ctx.stroke(); }
   ctx.restore();
 }
 function drawBush(x,gy,h){
@@ -525,126 +560,161 @@ function drawTram(){
   ctx.save();
   ctx.translate(gx,gy);
   ctx.rotate(ang);
-  drawDT812Local();
+  drawDoppel();
   ctx.restore();
 }
 
-// Local origin = contact point of wheels on rail (y=0 at rail top)
-function drawDT812Local(){
-  const L=300;            // total length
+// Doppeltriebwagen (SSB DT8): two coupled single-ended cars, cabs at the
+// outer ends, close-coupled in the middle. Local origin = rail contact (y=0).
+function drawDoppel(){
+  const carL=168, gap=12;             // each car length + center coupling gap
+  const L=carL*2+gap;
   const half=L/2;
   const wheelR=11;
-  const bodyBot=-wheelR-6;   // bottom of body sits above wheels
-  const bodyTop=bodyBot-78;  // body height ~78
-  const TH=bodyBot-bodyTop;  // positive height
-  const left=-half, right=half;
+  const bodyBot=-wheelR-6;
+  const bodyTop=bodyBot-78;
+  const TH=bodyBot-bodyTop;
 
-  // section split: front cab / mid / rear cab
-  const fW=L*0.27, mW=L*0.46, rW=L-fW-mW;
-  const fX=left, mX=left+fW, rX=left+fW+mW;
+  const c1L=-half,      c1R=-gap/2;    // left car spans
+  const c2L= gap/2,     c2R= half;     // right car spans
 
-  // ── shadow on ground ──
+  // shadow
   ctx.save(); ctx.globalAlpha=.06; ctx.fillStyle='#000';
-  ctx.beginPath(); ctx.ellipse(0,2,half*0.92,5,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+  ctx.beginPath(); ctx.ellipse(0,2,half*0.94,5,0,0,Math.PI*2); ctx.fill(); ctx.restore();
+
+  // center coupling between the two cars
+  drawCoupling(c1R,c2L,bodyTop,bodyBot,TH);
+
+  // the two cars (cab at outer end)
+  drawCar(c1L,c1R,bodyTop,bodyBot,TH,wheelR,false); // left car, cab on far left
+  drawCar(c2L,c2R,bodyTop,bodyBot,TH,wheelR,true);  // right car, cab on far right
+}
+
+// one motor car. cabOuterRight=true → cab is at the right end (nose points right)
+function drawCar(L,R,top,bot,TH,wheelR,cabOuterRight){
+  const W=R-L;
+  const noseX = cabOuterRight ? R : L;   // outer end (cab)
+  const innerX= cabOuterRight ? L : R;   // inner end (coupled)
+  const dir   = cabOuterRight ? 1 : -1;  // points outward
 
   // ── body fill faint ──
   ctx.save(); ctx.globalAlpha=.07; ctx.fillStyle='#cfcabd';
-  roundBodyPath(left,right,bodyTop,bodyBot,fW,rW); ctx.fill(); ctx.restore();
+  carBodyPath(L,R,top,bot,cabOuterRight); ctx.fill(); ctx.restore();
 
-  // ── roof equipment ──
+  // ── roof equipment + pantograph ──
   const roofH=8;
-  pr(left+fW*.5,bodyTop-roofH,L-fW*.5-rW*.5,roofH,.22,.8);
-  for(const bx of [mX+mW*.2, mX+mW*.5, mX+mW*.8]){ pr(bx-10,bodyTop-roofH+1,20,roofH-2,.2,.6); }
+  pr(L+W*0.12,top-roofH,W*0.76,roofH,.2,.7);
+  for(const bx of [L+W*0.3,L+W*0.55]) pr(bx-9,top-roofH+1,18,roofH-2,.18,.6);
+  drawPanto(cabOuterRight? L+W*0.34 : R-W*0.34, top-roofH);
 
-  // ── pantographs (folded diamond) ──
-  drawPanto(mX+mW*0.28, bodyTop-roofH);
-  drawPanto(mX+mW*0.72, bodyTop-roofH);
+  // ── window band ──
+  const winTop=top+TH*0.16, winBot=top+TH*0.58;
+  const wbL = cabOuterRight ? L+6 : L+W*0.18;
+  const wbR = cabOuterRight ? R-W*0.18 : R-6;
+  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle='#9bbccc'; ctx.fillRect(wbL,winTop,wbR-wbL,winBot-winTop); ctx.restore();
+  ln(wbL,winTop,wbR,winTop,.42,.9);
+  ln(wbL,winBot,wbR,winBot,.42,.9);
 
-  // ── window band (mid section) ──
-  const winTop=bodyTop+TH*0.16, winBot=bodyTop+TH*0.60;
-  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle='#9bbccc';
-  ctx.fillRect(mX+4,winTop,mW-8,winBot-winTop); ctx.restore();
-  ln(mX+4,winTop,mX+mW-4,winTop,.45,1);
-  ln(mX+4,winBot,mX+mW-4,winBot,.45,1);
-  // doors in mid (4) — DT 8.12 oval-ish dark panels
-  const doorPos=[mX+mW*.12,mX+mW*.37,mX+mW*.62,mX+mW*.87];
-  for(const dx of doorPos) drawDoor(dx-9,bodyTop+TH*0.12,18,TH*0.74);
-  // window mullions between doors
-  for(let m=0;m<5;m++){ const mxp=mX+mW*(0.24+m*0.13); ln(mxp,winTop,mxp,winBot,.22,.6); }
-  // passengers
-  const slots=Math.floor((mW-30)/24);
-  for(let p=0;p<slots;p++){ if(p<pax/3) drawPersonLocal(mX+18+p*24,winBot-1); }
+  // ── doors (3 per car) ──
+  const dInset = cabOuterRight ? 0.16 : 0.30;
+  const doorPos=[L+W*0.30, L+W*0.55, L+W*0.80];
+  for(const dx of doorPos) drawDoor(dx-9,top+TH*0.12,18,TH*0.74);
 
-  // ── front & rear cabs ──
-  drawCab(fX,fW,bodyTop,bodyBot,TH,false);
-  drawCab(rX,rW,bodyTop,bodyBot,TH,true);
+  // ── window mullions ──
+  for(let m=0;m<4;m++){ const mxp=wbL+(wbR-wbL)*(0.15+m*0.23); ln(mxp,winTop,mxp,winBot,.2,.55); }
 
-  // ── articulation joints ──
-  drawJoint(mX,bodyTop,bodyBot);
-  drawJoint(rX,bodyTop,bodyBot);
+  // ── passengers ──
+  const slots=Math.floor((wbR-wbL)/26);
+  for(let p=0;p<slots;p++){ if(p<pax/4) drawPersonLocal(wbL+16+p*26,winBot-1); }
 
-  // ── outline (crisp) ──
+  // ── cab at outer end ──
+  drawCab(noseX,dir,top,bot,TH);
+
+  // ── outline ──
   ctx.save(); ctx.globalAlpha=.78; ctx.strokeStyle=INK; ctx.lineWidth=1.8; ctx.lineCap='round'; ctx.lineJoin='round';
-  roundBodyPath(left,right,bodyTop,bodyBot,fW,rW); ctx.stroke();
+  carBodyPath(L,R,top,bot,cabOuterRight); ctx.stroke();
   ctx.globalAlpha=.1; ctx.lineWidth=4; ctx.stroke();
   ctx.restore();
 
   // ── waist stripe ──
-  ln(left+fW*.4,bodyTop+TH*0.64,right-rW*.4,bodyTop+TH*0.64,.2,.7);
+  ln(L+W*0.1,top+TH*0.63,R-W*0.1,top+TH*0.63,.18,.6);
 
-  // ── bogies ──
-  drawBogie(fX+fW*.30,wheelR);
-  drawBogie(fX+fW*.82,wheelR);
-  drawBogie(mX+mW+rW*.18,wheelR);
-  drawBogie(mX+mW+rW*.70,wheelR);
+  // ── bogies (2 per car) ──
+  drawBogie(L+W*0.24,wheelR);
+  drawBogie(R-W*0.24,wheelR);
 
-  // ── SSB lettering ──
-  ctx.save(); ctx.globalAlpha=.4; ctx.fillStyle=INK; ctx.font='bold 13px Georgia'; ctx.textAlign='right';
-  ctx.fillText('SSB',right-rW*0.16,bodyTop+TH*0.5);
-  ctx.font='9px Georgia'; ctx.globalAlpha=.28; ctx.fillText('3503',right-rW*0.16,bodyTop+TH*0.66);
+  // ── SSB lettering near the cab ──
+  ctx.save(); ctx.globalAlpha=.4; ctx.fillStyle=INK; ctx.font='bold 12px Georgia';
+  ctx.textAlign = cabOuterRight ? 'right' : 'left';
+  ctx.fillText('SSB', cabOuterRight? R-W*0.16 : L+W*0.16, top+TH*0.50);
   ctx.restore();
 }
 
-function roundBodyPath(left,right,top,bot,fW,rW){
-  const r=10, nose=14;
+// body outline: rounded roof corners, wedge nose at the cab (outer) end,
+// blunt vertical inner end
+function carBodyPath(L,R,top,bot,cabOuterRight){
+  const nose=14;
   ctx.beginPath();
-  // front nose (left) — wedge: top corner rounded, lower apron angled out
-  ctx.moveTo(left+nose, top);
-  ctx.lineTo(right-nose, top);
-  ctx.quadraticCurveTo(right, top, right+2, top+18);     // rear top corner
-  ctx.lineTo(right+2, bot-10);
-  ctx.quadraticCurveTo(right+2, bot, right-8, bot);        // rear lower
-  ctx.lineTo(left+8, bot);
-  ctx.quadraticCurveTo(left-2, bot, left-2, bot-10);       // front lower
-  ctx.lineTo(left-2, top+18);
-  ctx.quadraticCurveTo(left, top, left+nose, top);         // front top corner
-  ctx.closePath();
+  if(cabOuterRight){
+    // inner = left (blunt), cab = right (wedge)
+    ctx.moveTo(L, top+6);
+    ctx.quadraticCurveTo(L, top, L+8, top);
+    ctx.lineTo(R-nose, top);
+    ctx.quadraticCurveTo(R, top, R+2, top+18);     // cab top corner
+    ctx.lineTo(R+2, bot-10);
+    ctx.quadraticCurveTo(R+2, bot, R-8, bot);        // cab lower apron
+    ctx.lineTo(L+2, bot);
+    ctx.quadraticCurveTo(L, bot, L, bot-8);
+    ctx.closePath();
+  } else {
+    // cab = left (wedge), inner = right (blunt)
+    ctx.moveTo(L+nose, top);
+    ctx.lineTo(R-8, top);
+    ctx.quadraticCurveTo(R, top, R, top+6);
+    ctx.lineTo(R, bot-8);
+    ctx.quadraticCurveTo(R, bot, R-2, bot);
+    ctx.lineTo(L+8, bot);
+    ctx.quadraticCurveTo(L-2, bot, L-2, bot-10);     // cab lower apron
+    ctx.lineTo(L-2, top+18);
+    ctx.quadraticCurveTo(L, top, L+nose, top);       // cab top corner
+    ctx.closePath();
+  }
 }
 
-function drawCab(sx,sw,top,bot,TH,mirror){
-  const d=mirror?-1:1;
-  const nose=mirror?sx+sw:sx;
+// cab/nose at outer end. dir=+1 nose points right, -1 points left
+function drawCab(noseX,dir,top,bot,TH){
+  const sw=46; // cab depth
   // windshield
-  const wsW=sw*0.5;
-  const wsX=mirror? nose-d*(sw*0.08)-wsW : nose+d*(sw*0.08);
+  const wsW=sw*0.62;
+  const wsNear = noseX - dir*(sw*0.10);
+  const wsFar  = wsNear - dir*wsW;
+  const wsL=Math.min(wsNear,wsFar), wsR=Math.max(wsNear,wsFar);
   const wsTop=top+TH*0.10, wsBot=top+TH*0.46;
-  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle='#9bbccc'; ctx.fillRect(Math.min(wsX,wsX+wsW),wsTop,wsW,wsBot-wsTop); ctx.restore();
-  pr(Math.min(wsX,wsX+wsW),wsTop,wsW,wsBot-wsTop,.55,1);
-  ln(Math.min(wsX,wsX+wsW)+wsW/2,wsTop,Math.min(wsX,wsX+wsW)+wsW/2,wsBot,.25,.6);
-  // destination box
-  const ddX=mirror? nose-d*sw*0.6 : nose+d*sw*0.1;
-  pr(Math.min(ddX,ddX+sw*0.5),top+3,sw*0.5,TH*0.09,.45,.8);
-  ctx.save(); ctx.font='bold 8px Georgia'; ctx.fillStyle=INK; ctx.globalAlpha=.45; ctx.textAlign='center';
-  const ns=stations[nsi];
-  ctx.fillText((ns?ns.name:'—').substring(0,9),Math.min(ddX,ddX+sw*0.5)+sw*0.25,top+3+TH*0.075); ctx.restore();
-  // headlights
-  const hlY=top+TH*0.72, hlX=nose+d*6;
+  ctx.save(); ctx.globalAlpha=.05; ctx.fillStyle='#9bbccc'; ctx.fillRect(wsL,wsTop,wsR-wsL,wsBot-wsTop); ctx.restore();
+  pr(wsL,wsTop,wsR-wsL,wsBot-wsTop,.55,1);
+  ln((wsL+wsR)/2,wsTop,(wsL+wsR)/2,wsBot,.25,.6);
+  // destination display
+  const ddW=sw*0.7, ddNear=noseX-dir*sw*0.05, ddFar=ddNear-dir*ddW;
+  const ddL=Math.min(ddNear,ddFar);
+  pr(ddL,top+3,ddW,TH*0.09,.45,.8);
+  ctx.save(); ctx.font='bold 8px Georgia'; ctx.fillStyle=INK; ctx.globalAlpha=.5; ctx.textAlign='center';
+  ctx.fillText('U6 '+destName.substring(0,8),ddL+ddW/2,top+3+TH*0.075); ctx.restore();
+  // headlights (two stacked round)
+  const hlX=noseX+dir*5, hlY=top+TH*0.74;
   ctx.save(); ctx.globalAlpha=.5; ctx.strokeStyle=INK; ctx.lineWidth=1;
   ctx.beginPath(); ctx.arc(hlX,hlY,4,0,Math.PI*2); ctx.stroke();
-  ctx.beginPath(); ctx.arc(hlX,hlY-TH*0.12,2.4,0,Math.PI*2); ctx.stroke(); ctx.restore();
-  // one door on cab section (inboard)
-  const doorX=mirror? nose-d*sw*0.78 : nose+d*sw*0.62;
-  drawDoor(Math.min(doorX,doorX+18),top+TH*0.14,18,TH*0.72);
+  ctx.beginPath(); ctx.arc(hlX,hlY-TH*0.14,2.4,0,Math.PI*2); ctx.stroke(); ctx.restore();
+  // coupler at nose tip
+  ln(noseX+dir*1,bot-6,noseX+dir*7,bot-6,.5,1.6);
+}
+
+function drawCoupling(x1,x2,top,bot,TH){
+  const cy=top+TH*0.6;
+  ln(x1,cy,x2,cy,.5,1.8);
+  ln((x1+x2)/2,cy-5,(x1+x2)/2,cy+5,.4,1.2);
+  // bellows hint on each inner face
+  ln(x1,top+6,x1,bot-4,.3,.7);
+  ln(x2,top+6,x2,bot-4,.3,.7);
 }
 
 function drawDoor(dx,dy,dw,dh){
