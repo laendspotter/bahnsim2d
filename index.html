@@ -2,28 +2,38 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>Bahnsim 2D</title>
+<title>SSB DT 8.13 — Bahnsim 2D</title>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin:0; padding:0; box-sizing:border-box; }
 body {
-  background: #e8e2d4;
-  display: flex; align-items: center; justify-content: center;
-  height: 100vh; overflow: hidden;
-  font-family: 'Georgia', serif;
+  background:#e4dfd2;
+  display:flex; align-items:center; justify-content:center;
+  height:100vh; overflow:hidden;
+  font-family:'Georgia',serif;
 }
-canvas { display: block; }
+canvas { display:block; }
 #hud {
-  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 28px;
-  color: #444; font-size: 12px; letter-spacing: 0.08em;
-  opacity: 0.7; pointer-events: none; user-select: none;
-  font-style: italic;
+  position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+  display:flex; gap:30px;
+  color:#3a3530; font-size:12px; letter-spacing:0.08em;
+  opacity:0.68; pointer-events:none; user-select:none; font-style:italic;
 }
-#hud span { border-bottom: 1px solid #888; padding-bottom: 1px; }
+#hud span { border-bottom:1px solid #888; padding-bottom:1px; }
+#zone {
+  position:fixed; top:14px; left:50%; transform:translateX(-50%);
+  color:#5a5048; font-size:10px; font-style:italic; letter-spacing:0.12em;
+  opacity:0; transition:opacity 1.5s;
+  pointer-events:none;
+}
 #keys {
-  position: fixed; top: 12px; right: 16px;
-  color: #888; font-size: 10px; text-align: right;
-  line-height: 1.8; pointer-events: none; font-style: italic;
+  position:fixed; top:12px; right:16px;
+  color:#9a9088; font-size:10px; text-align:right;
+  line-height:1.8; pointer-events:none; font-style:italic;
+}
+#dist {
+  position:fixed; top:12px; left:16px;
+  color:#9a9088; font-size:10px; font-style:italic;
+  pointer-events:none;
 }
 </style>
 </head>
@@ -34,644 +44,845 @@ canvas { display: block; }
   <span id="h-station">→ Hauptbahnhof</span>
   <span id="h-pax">0 Fahrgäste</span>
 </div>
+<div id="zone"></div>
 <div id="keys">← → fahren / bremsen</div>
+<div id="dist">0.0 km</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
+const zoneEl = document.getElementById('zone');
+const distEl = document.getElementById('dist');
 
-// Paper texture offscreen
+// ─── Paper texture ───────────────────────────────────────────────────────────
 const paperCanvas = document.createElement('canvas');
-const paperCtx = paperCanvas.getContext('2d');
+const pCtx = paperCanvas.getContext('2d');
+
+function buildPaper() {
+  paperCanvas.width = canvas.width;
+  paperCanvas.height = canvas.height;
+  pCtx.fillStyle = '#eae5d8';
+  pCtx.fillRect(0, 0, paperCanvas.width, paperCanvas.height);
+  const id = pCtx.getImageData(0, 0, paperCanvas.width, paperCanvas.height);
+  const d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() - 0.5) * 20;
+    d[i]   = clamp(d[i]   + n);
+    d[i+1] = clamp(d[i+1] + n * 0.88);
+    d[i+2] = clamp(d[i+2] + n * 0.70);
+  }
+  pCtx.putImageData(id, 0, 0);
+  pCtx.save();
+  for (let y = 0; y < paperCanvas.height; y += 2 + Math.random() * 5) {
+    pCtx.globalAlpha = Math.random() * 0.025;
+    pCtx.strokeStyle = '#a09070';
+    pCtx.lineWidth = 0.3;
+    pCtx.beginPath();
+    pCtx.moveTo(0, y);
+    pCtx.lineTo(paperCanvas.width, y + (Math.random()-0.5)*1.5);
+    pCtx.stroke();
+  }
+  pCtx.restore();
+}
+function clamp(v){ return Math.max(0,Math.min(255,v)); }
 
 function resize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
   buildPaper();
 }
-
-function buildPaper() {
-  paperCanvas.width = canvas.width;
-  paperCanvas.height = canvas.height;
-  // Base cream
-  paperCtx.fillStyle = '#ece7da';
-  paperCtx.fillRect(0, 0, paperCanvas.width, paperCanvas.height);
-  // Grain
-  const id = paperCtx.getImageData(0, 0, paperCanvas.width, paperCanvas.height);
-  const d = id.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const n = (Math.random() - 0.5) * 18;
-    d[i]   = Math.max(0, Math.min(255, d[i]   + n));
-    d[i+1] = Math.max(0, Math.min(255, d[i+1] + n * 0.9));
-    d[i+2] = Math.max(0, Math.min(255, d[i+2] + n * 0.7));
-  }
-  paperCtx.putImageData(id, 0, 0);
-  // Horizontal fiber lines
-  paperCtx.save();
-  for (let y = 0; y < paperCanvas.height; y += 3 + Math.random() * 4) {
-    paperCtx.globalAlpha = Math.random() * 0.03;
-    paperCtx.strokeStyle = '#b0a080';
-    paperCtx.lineWidth = 0.4;
-    paperCtx.beginPath();
-    paperCtx.moveTo(0, y);
-    paperCtx.lineTo(paperCanvas.width, y + (Math.random()-0.5)*2);
-    paperCtx.stroke();
-  }
-  paperCtx.restore();
-}
-
 resize();
 window.addEventListener('resize', resize);
 
-// Pencil stroke color — pure graphite
-const INK = '#2c2820';
-const INK_LIGHT = '#5a5248';
-const INK_FAINT = '#8a8278';
+// ─── Drawing primitives ───────────────────────────────────────────────────────
+const INK = '#28231e';
+const INK_MID = '#585048';
+const INK_FAINT = '#908880';
 
-// Noise
-function rnd(n) { return (Math.random() - 0.5) * n; }
+function rnd(n){ return (Math.random()-0.5)*n; }
 
-// Draw a wobbly pencil line — breaks into short segments with jitter
-function pline(x1, y1, x2, y2, alpha=0.65, lw=1, segs=3) {
+function pline(x1,y1,x2,y2, alpha=0.65, lw=1, segs=4){
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.lineWidth = lw;
   ctx.strokeStyle = INK;
   ctx.lineCap = 'round';
   ctx.beginPath();
-  ctx.moveTo(x1 + rnd(0.8), y1 + rnd(0.8));
-  for (let s = 1; s <= segs; s++) {
-    const t = s / segs;
-    const mx = x1 + (x2 - x1) * t + rnd(1.2);
-    const my = y1 + (y2 - y1) * t + rnd(1.2);
-    ctx.lineTo(mx, my);
+  ctx.moveTo(x1+rnd(0.7), y1+rnd(0.7));
+  for(let s=1;s<=segs;s++){
+    const t=s/segs;
+    ctx.lineTo(x1+(x2-x1)*t+rnd(1.1), y1+(y2-y1)*t+rnd(1.1));
   }
   ctx.stroke();
-  // Second ghost pass for pencil feel
-  ctx.globalAlpha = alpha * 0.18;
-  ctx.lineWidth = lw * 2.2;
+  // ghost pass
+  ctx.globalAlpha = alpha*0.14;
+  ctx.lineWidth = lw*2;
   ctx.beginPath();
-  ctx.moveTo(x1 + rnd(1), y1 + rnd(1));
-  ctx.lineTo(x2 + rnd(1), y2 + rnd(1));
+  ctx.moveTo(x1+rnd(0.8),y1+rnd(0.8));
+  ctx.lineTo(x2+rnd(0.8),y2+rnd(0.8));
   ctx.stroke();
   ctx.restore();
 }
 
-// Sketch rect with wobbly corners
-function pRect(x, y, w, h, alpha=0.65, lw=1) {
-  pline(x, y, x+w, y, alpha, lw);
-  pline(x+w, y, x+w, y+h, alpha, lw);
-  pline(x+w, y+h, x, y+h, alpha, lw);
-  pline(x, y+h, x, y, alpha, lw);
+function pRect(x,y,w,h,alpha=0.65,lw=1){
+  pline(x,y,x+w,y,alpha,lw);
+  pline(x+w,y,x+w,y+h,alpha,lw);
+  pline(x+w,y+h,x,y+h,alpha,lw);
+  pline(x,y+h,x,y,alpha,lw);
 }
 
-// Hatching for shadow/fill
-function hatch(x, y, w, h, alpha=0.12, spacing=5, angle=45) {
+function hatch(x,y,w,h,alpha=0.10,spacing=6,angle=45){
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 0.5;
+  ctx.lineWidth = 0.45;
   ctx.lineCap = 'round';
   ctx.beginPath();
-  const rad = angle * Math.PI / 180;
-  const diagLen = Math.sqrt(w*w + h*h) * 1.5;
-  const step = spacing;
-  for (let d = -diagLen; d < diagLen; d += step) {
-    const cx2 = x + w/2, cy2 = y + h/2;
-    const ax = cx2 + d * Math.cos(rad + Math.PI/2) - diagLen * Math.cos(rad);
-    const ay = cy2 + d * Math.sin(rad + Math.PI/2) - diagLen * Math.sin(rad);
-    const bx = cx2 + d * Math.cos(rad + Math.PI/2) + diagLen * Math.cos(rad);
-    const by = cy2 + d * Math.sin(rad + Math.PI/2) + diagLen * Math.sin(rad);
-    // Clip to rect
-    const pts = clipLineToRect(ax, ay, bx, by, x, y, x+w, y+h);
-    if (pts) {
-      ctx.moveTo(pts[0] + rnd(0.4), pts[1] + rnd(0.4));
-      ctx.lineTo(pts[2] + rnd(0.4), pts[3] + rnd(0.4));
-    }
+  const rad = angle*Math.PI/180;
+  const diag = Math.sqrt(w*w+h*h)*1.5;
+  for(let d=-diag;d<diag;d+=spacing){
+    const cx2=x+w/2, cy2=y+h/2;
+    const ax=cx2+d*Math.cos(rad+Math.PI/2)-diag*Math.cos(rad);
+    const ay=cy2+d*Math.sin(rad+Math.PI/2)-diag*Math.sin(rad);
+    const bx=cx2+d*Math.cos(rad+Math.PI/2)+diag*Math.cos(rad);
+    const by=cy2+d*Math.sin(rad+Math.PI/2)+diag*Math.sin(rad);
+    const pts=clipLine(ax,ay,bx,by,x,y,x+w,y+h);
+    if(pts){ ctx.moveTo(pts[0]+rnd(0.3),pts[1]+rnd(0.3)); ctx.lineTo(pts[2]+rnd(0.3),pts[3]+rnd(0.3)); }
   }
   ctx.stroke();
   ctx.restore();
 }
 
-function clipLineToRect(ax, ay, bx, by, x0, y0, x1, y1) {
-  // Cohen-Sutherland simplified
-  let t0 = 0, t1 = 1;
-  const dx = bx - ax, dy = by - ay;
-  const tests = [
-    [-dx, ax - x0], [dx, x1 - ax],
-    [-dy, ay - y0], [dy, y1 - ay]
-  ];
-  for (const [p, q] of tests) {
-    if (p === 0) { if (q < 0) return null; continue; }
-    const r = q / p;
-    if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
-    else { if (r < t0) return null; if (r < t1) t1 = r; }
+function clipLine(ax,ay,bx,by,x0,y0,x1,y1){
+  let t0=0,t1=1;
+  const dx=bx-ax,dy=by-ay;
+  for(const[p,q] of[[-dx,ax-x0],[dx,x1-ax],[-dy,ay-y0],[dy,y1-ay]]){
+    if(p===0){ if(q<0)return null; continue; }
+    const r=q/p;
+    if(p<0){ if(r>t1)return null; if(r>t0)t0=r; }
+    else    { if(r<t0)return null; if(r<t1)t1=r; }
   }
-  return [ax + t0*dx, ay + t0*dy, ax + t1*dx, ay + t1*dy];
+  return[ax+t0*dx,ay+t0*dy,ax+t1*dx,ay+t1*dy];
 }
 
-// ---- World ----
-const GROUND_Y = () => canvas.height * 0.70;
-let worldX = 0, tramX = 0, speed = 0;
-const maxSpeed = 200, accel = 55, brake = 115;
-let autobrake = false, doorsOpen = false, doorTimer = 0, boardingTimer = 0, pax = 0;
+// wobbly arc
+function pArc(cx,cy,rx,ry,alpha=0.65,lw=1,steps=22){
+  ctx.save();
+  ctx.globalAlpha=alpha; ctx.lineWidth=lw;
+  ctx.strokeStyle=INK; ctx.lineCap='round';
+  ctx.beginPath();
+  for(let i=0;i<=steps;i++){
+    const a=(i/steps)*Math.PI*2;
+    const px=cx+Math.cos(a)*rx+rnd(1.2);
+    const py=cy+Math.sin(a)*ry+rnd(1.2);
+    i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
 
+// ─── World / state ────────────────────────────────────────────────────────────
+const GY = () => canvas.height * 0.70;
+let worldX=0, tramX=0, speed=0;
+const MAX_SPEED=210, ACCEL=58, BRAKE=118;
+let autobrake=false, doorsOpen=false, doorTimer=0, boardingTimer=0, pax=0;
+let totalDist=0;
+
+// Zones — different landscape feels
+const ZONES = [
+  { name:'Stadtmitte',       from:0,      buildings:true,  hills:false, dense:true  },
+  { name:'Wohngebiete',      from:8000,   buildings:true,  hills:false, dense:false },
+  { name:'Stadtrand',        from:18000,  buildings:false, hills:false, dense:false },
+  { name:'Weinberge',        from:30000,  buildings:false, hills:true,  dense:false },
+  { name:'Vorstadt',         from:42000,  buildings:true,  hills:false, dense:false },
+  { name:'Waldgebiet',       from:55000,  buildings:false, hills:true,  dense:true  },
+  { name:'Industrieviertel', from:68000,  buildings:true,  hills:false, dense:true  },
+  { name:'Altstadt',         from:80000,  buildings:true,  hills:false, dense:true  },
+  { name:'Talstation',       from:95000,  buildings:false, hills:true,  dense:false },
+  { name:'Endstation',       from:110000, buildings:true,  hills:true,  dense:false },
+];
+let currentZone=0;
+
+// Station names — expanded SSB Stuttgart style
 const stationNames = [
-  'Hauptbahnhof','Marktplatz','Rathaus','Stadtpark','Universität',
-  'Westbahnhof','Schillerplatz','Goethestraße','Moritzbastei','Am Teich',
-  'Kirschblütenweg','Waldfriedhof','Industriestr.','Neugasse','Südring',
-  'Botanischer Garten','Fischmarkt','Lindenallee','Nordbahnhof','Alte Mühle',
-  'Dampfbad','Kupferhammer','Silbersee','Bergstation','Talblick'
+  'Hauptbahnhof','Stadtmitte','Marktplatz','Rathaus','Charlottenplatz',
+  'Olgaeck','Österreichischer Platz','Bubenbad','Bopser','Degerloch',
+  'Albstraße','Weinsteige','Ruhbank','Waldau','Dornhaldenstraße',
+  'Südheimer Platz','Möhringen Bahnhof','Fasanenhof West','Messepiazza',
+  'Leinfelden','Echterdingen','Flughafen','Plieningen','Heumaden',
+  'Sillenbuch','Riedenberg','Steckfeld','Rauher Kapf',
+  'Nordbahnhof','Bad Cannstatt','Wilhelmsplatz','Hallschlag','Sommerrain',
+  'Mühlhausen','Fellbach','Schmiden','Winnenden',
+  'Westbahnhof','Schwabstraße','Vogelsang','Heslach','Kräherwald',
+  'Feuersee','Rosenbergplatz','Hölderlinplatz','Bismarckplatz',
+  'Eugensplatz','Geroksruhe','Mineralbäder','Berger Stich',
+  'Stöckach','Gaisburg','Gaskessel','Wangen','Obertürkheim',
+  'Untertürkheim','Mettingen','Hedelfingen','Rohracker','Lederberg',
 ];
 
-const stations = [];
-let sx2 = 400;
-for (let i = 0; i < 200; i++) {
-  sx2 += 880 + Math.random() * 650;
-  stations.push({ x: sx2, name: stationNames[i % stationNames.length],
-    waiting: Math.floor(Math.random()*6)+1, served: false });
+const stations=[];
+let bx=600;
+for(let i=0;i<300;i++){
+  bx += 820 + Math.random()*600;
+  stations.push({
+    x:bx,
+    name:stationNames[i%stationNames.length],
+    waiting:Math.floor(Math.random()*7)+1,
+    served:false,
+    big: Math.random()<0.25
+  });
 }
-let nextStationIdx = 0, stoppedAt = null;
+let nextStnIdx=0, stoppedAt=null;
 
-// Background elements — pre-seeded
-const bgElems = [];
-for (let i = 0; i < 700; i++) {
-  const wx = Math.random() * 200000;
-  const r = Math.random();
-  if (r < 0.28) bgElems.push({ type:'tree',    wx, layer:2, h: 45+Math.random()*55 });
-  else if (r < 0.50) bgElems.push({ type:'pine',wx, layer:2, h: 55+Math.random()*65 });
-  else if (r < 0.67) bgElems.push({ type:'house',wx, layer:2, w:55+Math.random()*45, h:40+Math.random()*35 });
-  else if (r < 0.80) bgElems.push({ type:'tree', wx, layer:3, h: 22+Math.random()*28 });
-  else if (r < 0.90) bgElems.push({ type:'pine', wx, layer:3, h: 18+Math.random()*22 });
-  else bgElems.push({ type:'hill', wx, layer:1, w:280+Math.random()*420, h:55+Math.random()*90 });
+// Background elements — much more of them, zone-tagged
+const bgElems=[];
+for(let i=0;i<2000;i++){
+  const wx=Math.random()*350000;
+  const r=Math.random();
+  if(r<0.22)      bgElems.push({type:'tree',   wx,layer:2,h:50+Math.random()*60});
+  else if(r<0.42) bgElems.push({type:'pine',   wx,layer:2,h:60+Math.random()*70});
+  else if(r<0.60) bgElems.push({type:'house',  wx,layer:2,w:55+Math.random()*55,h:42+Math.random()*38});
+  else if(r<0.68) bgElems.push({type:'factory',wx,layer:2,w:80+Math.random()*60,h:55+Math.random()*30});
+  else if(r<0.76) bgElems.push({type:'church', wx,layer:2,h:70+Math.random()*40});
+  else if(r<0.84) bgElems.push({type:'tree',   wx,layer:3,h:25+Math.random()*30});
+  else if(r<0.90) bgElems.push({type:'pine',   wx,layer:3,h:20+Math.random()*25});
+  else if(r<0.95) bgElems.push({type:'hill',   wx,layer:1,w:320+Math.random()*500,h:65+Math.random()*100});
+  else            bgElems.push({type:'vineyard',wx,layer:2,w:100+Math.random()*80,h:35+Math.random()*20});
 }
 bgElems.sort((a,b)=>a.layer-b.layer);
 
-const birds = Array.from({length:10}, () => ({
-  wx: Math.random()*8000, wy: 50+Math.random()*100,
-  spd: 25+Math.random()*55, flap: Math.random()*Math.PI*2
+const birds=Array.from({length:14},()=>({
+  wx:Math.random()*12000, wy:45+Math.random()*110,
+  spd:22+Math.random()*50, flap:Math.random()*Math.PI*2
 }));
 
-// Input
-const keys = {};
-window.addEventListener('keydown', e => { keys[e.code]=true; if(e.code==='Space') e.preventDefault(); });
-window.addEventListener('keyup', e => { keys[e.code]=false; });
+// ─── Input ────────────────────────────────────────────────────────────────────
+const keys={};
+window.addEventListener('keydown',e=>{ keys[e.code]=true; if(e.code==='Space')e.preventDefault(); });
+window.addEventListener('keyup',  e=>{ keys[e.code]=false; });
 
-// Loop
-let last = 0;
-function loop(ts) {
-  const dt = Math.min((ts-last)/1000, 0.05); last = ts;
+// ─── Loop ─────────────────────────────────────────────────────────────────────
+let last=0;
+function loop(ts){
+  const dt=Math.min((ts-last)/1000,0.05); last=ts;
   update(dt); draw();
   requestAnimationFrame(loop);
 }
 
-function update(dt) {
-  while (nextStationIdx < stations.length-1 && stations[nextStationIdx].served) nextStationIdx++;
-  const ns = stations[nextStationIdx];
-  const dist = ns.x - tramX;
-  const brakeDist = (speed*speed)/(2*brake)+35;
-  autobrake = dist < brakeDist+20 && dist > -10 && !stoppedAt;
-
-  if (dist <= 0 && !stoppedAt && speed < 5) {
-    speed = 0; stoppedAt = ns; doorsOpen = false; doorTimer = 0.5; boardingTimer = 2.8;
+let lastZoneName='';
+function update(dt){
+  // Zone
+  const z=ZONES.slice().reverse().find(z=>tramX>=z.from)||ZONES[0];
+  if(z.name!==lastZoneName){
+    lastZoneName=z.name;
+    zoneEl.style.opacity='0.75';
+    zoneEl.textContent=z.name;
+    setTimeout(()=>zoneEl.style.opacity='0',2200);
   }
-  if (stoppedAt) {
-    doorTimer -= dt;
-    if (doorTimer <= 0 && !doorsOpen) doorsOpen = true;
-    if (doorsOpen) {
-      boardingTimer -= dt;
-      if (boardingTimer <= 0) {
-        pax = Math.max(0, pax - Math.floor(Math.random()*3+1));
-        pax = Math.min(8, pax + Math.min(stoppedAt.waiting, 8-pax));
-        stoppedAt.waiting = 0; stoppedAt.served = true;
-        stoppedAt = null; doorsOpen = false;
+
+  // Station logic
+  while(nextStnIdx<stations.length-1&&stations[nextStnIdx].served) nextStnIdx++;
+  const ns=stations[nextStnIdx];
+  const dist=ns.x-tramX;
+  const brakeDist=(speed*speed)/(2*BRAKE)+40;
+  autobrake=dist<brakeDist+25&&dist>-15&&!stoppedAt;
+
+  if(dist<=0&&!stoppedAt&&speed<5){
+    speed=0; stoppedAt=ns; doorsOpen=false; doorTimer=0.55; boardingTimer=2.8;
+  }
+  if(stoppedAt){
+    doorTimer-=dt;
+    if(doorTimer<=0&&!doorsOpen) doorsOpen=true;
+    if(doorsOpen){
+      boardingTimer-=dt;
+      if(boardingTimer<=0){
+        const alight=Math.min(Math.floor(Math.random()*4)+1,pax);
+        pax=Math.max(0,pax-alight);
+        pax=Math.min(30,pax+Math.min(stoppedAt.waiting,30-pax));
+        stoppedAt.waiting=0; stoppedAt.served=true;
+        stoppedAt=null; doorsOpen=false;
       }
     }
   }
-  if (!stoppedAt) {
-    if ((keys['ArrowRight']||keys['KeyD']) && !autobrake) speed = Math.min(maxSpeed, speed+accel*dt);
-    else if (keys['ArrowLeft']||keys['KeyA']) speed = Math.max(0, speed-brake*dt);
-    else if (autobrake) speed = Math.max(0, speed-brake*dt);
-    else speed = Math.min(maxSpeed*0.5, speed+accel*0.25*dt);
-  }
-  tramX += speed*dt;
-  worldX = tramX - canvas.width*0.34;
 
-  for (const b of birds) {
-    b.wx += b.spd*dt; b.flap += dt*3.5;
-    if (b.wx - worldX*0.1 > canvas.width+200) b.wx -= 14000;
+  if(!stoppedAt){
+    if((keys['ArrowRight']||keys['KeyD'])&&!autobrake) speed=Math.min(MAX_SPEED,speed+ACCEL*dt);
+    else if(keys['ArrowLeft']||keys['KeyA']) speed=Math.max(0,speed-BRAKE*dt);
+    else if(autobrake) speed=Math.max(0,speed-BRAKE*dt);
+    else speed=Math.min(MAX_SPEED*0.52,speed+ACCEL*0.28*dt);
   }
 
-  const kmh = Math.round(speed*3.6/10)*10;
-  document.getElementById('h-speed').textContent = kmh+' km/h';
-  document.getElementById('h-station').textContent = '→ '+ns.name+(dist<200?' ·':'');
-  document.getElementById('h-pax').textContent = pax+' Fahrgäste';
+  tramX+=speed*dt;
+  totalDist+=speed*dt;
+  worldX=tramX-canvas.width*0.32;
+
+  for(const b of birds){
+    b.wx+=b.spd*dt; b.flap+=dt*3.2;
+    if(b.wx-worldX*0.09>canvas.width+200) b.wx-=16000;
+  }
+
+  const kmh=Math.round(speed*3.6/10)*10;
+  document.getElementById('h-speed').textContent=kmh+' km/h';
+  document.getElementById('h-station').textContent='→ '+ns.name+(dist<250?' ·':'');
+  document.getElementById('h-pax').textContent=pax+' Fahrgäste';
+  distEl.textContent=(totalDist/1000).toFixed(1)+' km';
 }
 
-function draw() {
-  const W = canvas.width, H = canvas.height, GY = GROUND_Y();
+// ─── Draw ─────────────────────────────────────────────────────────────────────
+function draw(){
+  const W=canvas.width, H=canvas.height, groundY=GY();
+  ctx.drawImage(paperCanvas,0,0);
 
-  // Paper base
-  ctx.drawImage(paperCanvas, 0, 0);
-
-  // Sky — very faint gray wash, just slightly lighter than paper at top
+  // Sky wash
   ctx.save();
-  ctx.globalAlpha = 0.18;
-  const skyGrad = ctx.createLinearGradient(0, 0, 0, GY);
-  skyGrad.addColorStop(0, '#d0ccc0');
-  skyGrad.addColorStop(1, '#e8e4d8');
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, W, GY);
+  ctx.globalAlpha=0.14;
+  const sg=ctx.createLinearGradient(0,0,0,groundY);
+  sg.addColorStop(0,'#c8c4bc'); sg.addColorStop(1,'#e0dcd2');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,groundY);
   ctx.restore();
 
-  // Far hills — very faint, light hatching
-  for (const o of bgElems) {
-    if (o.layer !== 1) continue;
-    const sx = o.wx - worldX * 0.06;
-    if (sx < -500 || sx > W+500) continue;
-    drawHill(sx, GY - 20, o.w, o.h, 0.10);
-  }
+  // Clouds
+  drawClouds(groundY);
 
-  // Mid layer
-  for (const o of bgElems) {
-    if (o.layer !== 2) continue;
-    const sx = o.wx - worldX * 0.28;
-    if (sx < -200 || sx > W+200) continue;
-    const groundBase = GY - 10;
-    ctx.save(); ctx.globalAlpha = 0.55;
-    if (o.type==='tree')  drawTree(sx, groundBase, o.h, 0.28);
-    if (o.type==='pine')  drawPine(sx, groundBase, o.h, 0.28);
-    if (o.type==='house') drawHouse(sx, groundBase, o.w, o.h);
+  // Layer 1 — far hills (very faint)
+  for(const o of bgElems){
+    if(o.layer!==1)continue;
+    const sx=o.wx-worldX*0.055;
+    if(sx<-600||sx>W+600)continue;
+    ctx.save(); ctx.globalAlpha=0.12;
+    drawHill(sx,groundY-15,o.w,o.h);
     ctx.restore();
   }
 
-  // Near layer
-  for (const o of bgElems) {
-    if (o.layer !== 3) continue;
-    const sx = o.wx - worldX * 0.72;
-    if (sx < -100 || sx > W+100) continue;
-    ctx.save(); ctx.globalAlpha = 0.8;
-    if (o.type==='tree') drawTree(sx, GY+2, o.h, 0.72);
-    if (o.type==='pine') drawPine(sx, GY+2, o.h, 0.72);
+  // Layer 2 — mid background
+  for(const o of bgElems){
+    if(o.layer!==2)continue;
+    const sx=o.wx-worldX*0.27;
+    if(sx<-250||sx>W+250)continue;
+    ctx.save(); ctx.globalAlpha=0.52;
+    if(o.type==='tree')    drawTree(sx,groundY-8,o.h,0.27);
+    if(o.type==='pine')    drawPine(sx,groundY-8,o.h,0.27);
+    if(o.type==='house')   drawHouse(sx,groundY-8,o.w,o.h);
+    if(o.type==='factory') drawFactory(sx,groundY-8,o.w,o.h);
+    if(o.type==='church')  drawChurch(sx,groundY-8,o.h);
+    if(o.type==='vineyard')drawVineyard(sx,groundY-8,o.w,o.h);
+    ctx.restore();
+  }
+
+  // Layer 3 — near trees
+  for(const o of bgElems){
+    if(o.layer!==3)continue;
+    const sx=o.wx-worldX*0.74;
+    if(sx<-80||sx>W+80)continue;
+    ctx.save(); ctx.globalAlpha=0.85;
+    if(o.type==='tree') drawTree(sx,groundY+2,o.h,0.74);
+    if(o.type==='pine') drawPine(sx,groundY+2,o.h,0.74);
     ctx.restore();
   }
 
   // Birds
-  for (const b of birds) {
-    const bsx = b.wx - worldX*0.1;
-    if (bsx < -30 || bsx > W+30) continue;
-    ctx.save(); ctx.globalAlpha = 0.35;
-    ctx.strokeStyle = INK; ctx.lineWidth = 0.8; ctx.lineCap='round';
-    const flap = Math.sin(b.flap)*5;
+  for(const b of birds){
+    const bsx=b.wx-worldX*0.09;
+    if(bsx<-40||bsx>W+40)continue;
+    ctx.save(); ctx.globalAlpha=0.3;
+    ctx.strokeStyle=INK; ctx.lineWidth=0.75; ctx.lineCap='round';
+    const flap=Math.sin(b.flap)*5;
     ctx.beginPath();
-    ctx.moveTo(bsx-9, b.wy+flap);
-    ctx.quadraticCurveTo(bsx-4, b.wy, bsx, b.wy+2);
-    ctx.quadraticCurveTo(bsx+4, b.wy, bsx+9, b.wy+flap);
+    ctx.moveTo(bsx-9,b.wy+flap);
+    ctx.quadraticCurveTo(bsx-4,b.wy,bsx,b.wy+2);
+    ctx.quadraticCurveTo(bsx+4,b.wy,bsx+9,b.wy+flap);
     ctx.stroke();
     ctx.restore();
   }
 
-  // Ground — hatched / textured
+  // Ground
   ctx.save();
-  ctx.globalAlpha = 0.06;
-  const gGrad = ctx.createLinearGradient(0, GY, 0, H);
-  gGrad.addColorStop(0, '#888');
-  gGrad.addColorStop(1, '#555');
-  ctx.fillStyle = gGrad;
-  ctx.fillRect(0, GY, W, H-GY);
+  ctx.globalAlpha=0.07;
+  const gg=ctx.createLinearGradient(0,groundY,0,H);
+  gg.addColorStop(0,'#777'); gg.addColorStop(1,'#444');
+  ctx.fillStyle=gg; ctx.fillRect(0,groundY,W,H-groundY);
   ctx.restore();
-  hatch(0, GY, W, H-GY, 0.055, 8, 30);
-  // Ground horizon line — strong pencil stroke
-  pline(0, GY, W, GY, 0.55, 1.5, 8);
+  hatch(0,groundY,W,H-groundY,0.05,9,28);
+  hatch(0,groundY,W,(H-groundY)*0.3,0.04,14,120);
 
-  // Grass tufts along ground
-  const tSpacing = 40;
-  const tOffset = worldX % tSpacing;
-  for (let tx = -tOffset; tx < W + tSpacing; tx += tSpacing) {
-    const gx = tx + rnd(4);
-    for (let blade = 0; blade < 3; blade++) {
-      const bx = gx + rnd(6);
-      pline(bx, GY, bx + rnd(4)-1, GY - 5 - Math.random()*5, 0.2, 0.5, 2);
+  // Ground line
+  pline(0,groundY,W,groundY,0.52,1.4,10);
+
+  // Grass tufts
+  const ts=38, to=worldX%ts;
+  for(let tx=-to;tx<W+ts;tx+=ts){
+    const gx=tx+rnd(5);
+    for(let b=0;b<3;b++){
+      const bx2=gx+rnd(7);
+      pline(bx2,groundY,bx2+rnd(3)-1,groundY-4-Math.random()*6,0.18,0.4,2);
     }
   }
 
   // Track
-  drawTrack(GY);
+  drawTrack(groundY);
 
-  // Overhead wire + poles
-  drawOverhead(GY);
+  // Overhead
+  drawOverhead(groundY);
 
   // Stations
-  for (const s of stations) {
-    const sx = s.x - worldX;
-    if (sx < -200 || sx > W+200) continue;
-    drawStation(s, GY);
+  for(const s of stations){
+    const sx=s.x-worldX;
+    if(sx<-250||sx>W+250)continue;
+    drawStation(s,groundY);
   }
 
-  // Tram
-  drawTram(tramX - worldX, GY);
+  // Tram — DT 8.13 Stadler Tango S
+  drawDT813(tramX-worldX, groundY);
 
-  // Vignette — soft pencil smudge at edges
+  // Vignette
   ctx.save();
-  const vig = ctx.createRadialGradient(W/2, H/2, H*0.28, W/2, H/2, H*0.82);
-  vig.addColorStop(0, 'rgba(0,0,0,0)');
-  vig.addColorStop(1, 'rgba(30,25,18,0.28)');
-  ctx.fillStyle = vig;
-  ctx.fillRect(0, 0, W, H);
+  const vig=ctx.createRadialGradient(W/2,H/2,H*0.25,W/2,H/2,H*0.85);
+  vig.addColorStop(0,'rgba(0,0,0,0)');
+  vig.addColorStop(1,'rgba(22,18,12,0.30)');
+  ctx.fillStyle=vig; ctx.fillRect(0,0,W,H);
   ctx.restore();
 }
 
-function drawHill(x, groundY, w, h, alpha) {
-  ctx.save(); ctx.globalAlpha = alpha;
-  ctx.strokeStyle = INK_FAINT; ctx.lineWidth = 0.8; ctx.lineCap='round';
+// ─── Background drawers ───────────────────────────────────────────────────────
+function drawClouds(groundY){
+  // deterministic clouds based on worldX
+  for(let i=0;i<8;i++){
+    const seed=i*1973.4;
+    const cx=((seed*0.137)%1)*canvas.width*2.5 - worldX*0.03 + seed%400;
+    const cy=((seed*0.211)%0.5)*groundY*0.6+20;
+    const cw=80+((seed*0.317)%1)*120;
+    const ch=20+((seed*0.419)%1)*25;
+    ctx.save(); ctx.globalAlpha=0.08;
+    ctx.strokeStyle=INK_FAINT; ctx.lineWidth=0.5;
+    // rough cloud blob
+    for(let j=0;j<4;j++){
+      const ox=rnd(cw*0.3), oy=rnd(ch*0.3);
+      ctx.beginPath();
+      ctx.ellipse(cx+ox,cy+oy,cw*0.3+rnd(8),ch*0.4+rnd(5),0,0,Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function drawHill(x,groundY,w,h){
+  ctx.strokeStyle=INK_FAINT; ctx.lineWidth=0.7; ctx.lineCap='round';
   ctx.beginPath();
-  ctx.moveTo(x - w/2 + rnd(3), groundY + rnd(2));
+  ctx.moveTo(x-w/2+rnd(4),groundY+rnd(2));
   ctx.bezierCurveTo(
-    x - w*0.2 + rnd(10), groundY - h*0.6 + rnd(8),
-    x + w*0.2 + rnd(10), groundY - h + rnd(10),
-    x + w/2 + rnd(3), groundY + rnd(2)
+    x-w*0.25+rnd(12),groundY-h*0.7+rnd(10),
+    x+w*0.15+rnd(12),groundY-h+rnd(12),
+    x+w/2+rnd(4),groundY+rnd(2)
   );
   ctx.stroke();
-  // faint interior hatch
-  hatch(x - w/2, groundY - h, w, h, 0.04, 14, 25);
-  ctx.restore();
+  hatch(x-w/2,groundY-h,w,h,0.035,16,22);
 }
 
-function drawTree(x, groundY, h, par) {
-  const lw = par > 0.5 ? 1 : 0.6;
-  const trunkH = h * 0.38;
-  // trunk — double line
-  pline(x-2, groundY, x-1, groundY-trunkH, 0.7, lw);
-  pline(x+2, groundY, x+1, groundY-trunkH, 0.65, lw*0.8);
-  // canopy outline — wobbly ellipse
-  ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth = lw;
-  const cy = groundY - trunkH - h*0.32;
-  const rx = h*0.32, ry = h*0.34;
-  // draw as poly of short lines
-  ctx.beginPath();
-  const steps = 18;
-  for (let i = 0; i <= steps; i++) {
-    const a = (i/steps)*Math.PI*2;
-    const px2 = x + Math.cos(a)*rx + rnd(1.8);
-    const py = cy + Math.sin(a)*ry + rnd(1.8);
-    i===0 ? ctx.moveTo(px2,py) : ctx.lineTo(px2,py);
-  }
-  ctx.globalAlpha = 0.65; ctx.stroke();
-  // inner scribble
-  for (let s=0; s<5; s++) {
-    ctx.globalAlpha = 0.12;
-    ctx.beginPath();
-    ctx.moveTo(x+rnd(rx*0.8), cy+rnd(ry*0.8));
-    ctx.lineTo(x+rnd(rx*0.8), cy+rnd(ry*0.8));
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawPine(x, groundY, h, par) {
-  const lw = par > 0.5 ? 1 : 0.6;
-  pline(x, groundY, x, groundY-h, 0.7, lw);
-  const layers = 5;
-  for (let i = 0; i < layers; i++) {
-    const t = i/layers;
-    const ly = groundY - h*(0.12 + t*0.82);
-    const lw2 = h*(0.28 - t*0.18);
-    pline(x-lw2+rnd(1), ly+h*0.04+rnd(1), x+rnd(2), ly-h*0.10+rnd(2), 0.6, lw, 2);
-    pline(x+lw2+rnd(1), ly+h*0.04+rnd(1), x+rnd(2), ly-h*0.10+rnd(2), 0.6, lw, 2);
+function drawTree(x,groundY,h,par){
+  const lw=par>0.5?1:0.55;
+  pline(x-1.5,groundY,x-1,groundY-h*0.38,0.7,lw);
+  pline(x+1.5,groundY,x+1,groundY-h*0.38,0.6,lw*0.7);
+  const cy=groundY-h*0.38-h*0.33;
+  const rx=h*0.30,ry=h*0.33;
+  pArc(x,cy,rx,ry,0.65,lw,20);
+  for(let s=0;s<4;s++){
+    pline(x+rnd(rx*0.7),cy+rnd(ry*0.5),x+rnd(rx*0.7),cy+rnd(ry*0.5),0.1,0.4);
   }
 }
 
-function drawHouse(x, groundY, w, h) {
-  // wall — hatched fill first
-  hatch(x-w/2, groundY-h, w, h, 0.07, 7, 90);
-  pRect(x-w/2, groundY-h, w, h, 0.65, 1);
+function drawPine(x,groundY,h,par){
+  const lw=par>0.5?0.9:0.5;
+  pline(x,groundY,x,groundY-h,0.68,lw);
+  for(let i=0;i<5;i++){
+    const t=i/5;
+    const ly=groundY-h*(0.10+t*0.84);
+    const lw2=h*(0.25-t*0.16);
+    pline(x-lw2+rnd(1.5),ly+h*0.05+rnd(1),x+rnd(2),ly-h*0.09+rnd(2),0.58,lw,2);
+    pline(x+lw2+rnd(1.5),ly+h*0.05+rnd(1),x+rnd(2),ly-h*0.09+rnd(2),0.58,lw,2);
+  }
+}
+
+function drawHouse(x,groundY,w,h){
+  hatch(x-w/2,groundY-h,w,h,0.055,8,90);
+  pRect(x-w/2,groundY-h,w,h,0.62,0.9);
   // roof
-  ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth=1.2; ctx.globalAlpha=0.65; ctx.lineCap='round';
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.1; ctx.globalAlpha=0.62; ctx.lineCap='round';
   ctx.beginPath();
-  ctx.moveTo(x-w/2-5+rnd(1), groundY-h+rnd(1));
-  ctx.lineTo(x+rnd(2), groundY-h-h*0.55+rnd(3));
-  ctx.lineTo(x+w/2+5+rnd(1), groundY-h+rnd(1));
-  ctx.stroke();
-  // roof hatch
-  hatch(x-w/2-5, groundY-h-h*0.55, w+10, h*0.55, 0.08, 5, 135);
-  ctx.restore();
+  ctx.moveTo(x-w/2-5+rnd(1),groundY-h+rnd(1));
+  ctx.lineTo(x+rnd(2),groundY-h-h*0.52+rnd(3));
+  ctx.lineTo(x+w/2+5+rnd(1),groundY-h+rnd(1));
+  ctx.stroke(); ctx.restore();
+  hatch(x-w/2-5,groundY-h-h*0.52,w+10,h*0.52,0.07,4,135);
   // windows
-  const winCount = Math.floor(w/25);
-  for (let i=0; i<winCount; i++) {
-    const wx2 = x - w/2 + 12 + i*(w-16)/(Math.max(winCount-1,1));
-    pRect(wx2-6+rnd(0.5), groundY-h*0.62+rnd(0.5), 12, 10, 0.55, 0.8);
-    // cross
-    pline(wx2, groundY-h*0.62, wx2, groundY-h*0.62+10, 0.3, 0.5);
-    pline(wx2-6, groundY-h*0.62+5, wx2+6, groundY-h*0.62+5, 0.3, 0.5);
+  const nc=Math.max(1,Math.floor(w/24));
+  for(let i=0;i<nc;i++){
+    const wx2=x-w/2+12+i*(w-20)/(Math.max(nc-1,1));
+    pRect(wx2-5+rnd(0.5),groundY-h*0.65+rnd(0.5),10,9,0.5,0.7);
+    pline(wx2,groundY-h*0.65,wx2,groundY-h*0.65+9,0.22,0.4);
+    pline(wx2-5,groundY-h*0.65+4.5,wx2+5,groundY-h*0.65+4.5,0.22,0.4);
   }
   // door
-  pRect(x-5+rnd(0.5), groundY-h*0.4+rnd(0.5), 10, h*0.4, 0.5, 0.8);
+  pRect(x-4,groundY-h*0.38,8,h*0.38,0.48,0.7);
 }
 
-function drawTrack(GY) {
-  const W = canvas.width;
-  const railY = GY + 3;
-  const gauge = 13;
-
-  // Sleepers first
-  const sleeperSpacing = 20;
-  const off = worldX % sleeperSpacing;
-  for (let tx = -off; tx < W + sleeperSpacing; tx += sleeperSpacing) {
-    pline(tx+rnd(0.4), railY-gauge-1, tx+rnd(0.4), railY+gauge+1, 0.35, 2.5, 1);
+function drawFactory(x,groundY,w,h){
+  hatch(x-w/2,groundY-h,w,h,0.06,7,90);
+  pRect(x-w/2,groundY-h,w,h,0.62,1);
+  // chimney
+  pRect(x-w/2+10,groundY-h-22,12,22,0.6,0.8);
+  hatch(x-w/2+10,groundY-h-22,12,22,0.08,5,90);
+  // smoke puffs
+  for(let s=0;s<3;s++){
+    ctx.save(); ctx.globalAlpha=0.08; ctx.strokeStyle=INK_FAINT; ctx.lineWidth=0.5;
+    ctx.beginPath();
+    ctx.ellipse(x-w/2+16+rnd(3),groundY-h-22-s*10-rnd(3),4+s*2,3+s*1.5,0,0,Math.PI*2);
+    ctx.stroke(); ctx.restore();
   }
-  // Rails
-  pline(-5, railY-gauge/2, W+5, railY-gauge/2, 0.7, 1.4, 12);
-  pline(-5, railY+gauge/2, W+5, railY+gauge/2, 0.7, 1.4, 12);
+  // windows — industrial, rectangular
+  const cols=Math.max(2,Math.floor(w/25));
+  for(let i=0;i<cols;i++){
+    const wx2=x-w/2+16+i*(w-28)/(Math.max(cols-1,1));
+    pRect(wx2-5,groundY-h*0.6,10,14,0.45,0.7);
+  }
 }
 
-function drawOverhead(GY) {
-  const W = canvas.width;
-  const wireY = GY - 88;
-  const poleSpacing = 175;
-  const off = worldX % poleSpacing;
+function drawChurch(x,groundY,h){
+  const w=h*0.55;
+  hatch(x-w/2,groundY-h*0.7,w,h*0.7,0.055,8,90);
+  pRect(x-w/2,groundY-h*0.7,w,h*0.7,0.65,0.9);
+  // tower
+  pRect(x-10,groundY-h,20,h,0.65,0.9);
+  hatch(x-10,groundY-h,20,h,0.07,5,90);
+  // spire
+  pline(x-10,groundY-h,x,groundY-h-h*0.45,0.65,1);
+  pline(x+10,groundY-h,x,groundY-h-h*0.45,0.65,1);
+  // cross
+  pline(x,groundY-h-h*0.35,x,groundY-h-h*0.15,0.6,1);
+  pline(x-6,groundY-h-h*0.28,x+6,groundY-h-h*0.28,0.6,1);
+  // rose window
+  pArc(x,groundY-h*0.85,8,8,0.45,0.7,12);
+}
 
-  // Poles
-  for (let px = -off; px < W+poleSpacing; px += poleSpacing) {
-    pline(px+rnd(0.5), GY+3, px+rnd(0.5), wireY+2, 0.45, 1.2);
-    // cross arm
-    pline(px, wireY+2, px-20, wireY-6, 0.38, 0.9);
-    pline(px-20, wireY-6, px-20, wireY+4, 0.3, 0.7);
-    // brace
-    pline(px-20, wireY-6, px-8, wireY-12, 0.25, 0.6);
+function drawVineyard(x,groundY,w,h){
+  const rows=4;
+  for(let r=0;r<rows;r++){
+    const ry=groundY-(r+0.5)*(h/rows);
+    pline(x-w/2,ry,x+w/2,ry,0.22,0.5,6);
+    // stakes
+    const posts=Math.floor(w/18);
+    for(let p=0;p<posts;p++){
+      const px2=x-w/2+p*(w/posts)+rnd(2);
+      pline(px2,ry,px2,ry-h/rows*0.7,0.18,0.5,1);
+    }
   }
+  // bounding lines
+  pline(x-w/2,groundY,x-w/2,groundY-h,0.2,0.5);
+  pline(x+w/2,groundY,x+w/2,groundY-h,0.2,0.5);
+}
 
-  // Catenary wire
-  ctx.save(); ctx.strokeStyle = INK_LIGHT; ctx.lineWidth = 0.7;
-  ctx.globalAlpha = 0.38; ctx.lineCap='round';
+// ─── Track ────────────────────────────────────────────────────────────────────
+function drawTrack(groundY){
+  const W=canvas.width;
+  const railY=groundY+3, gauge=14;
+  const sSpacing=19, off=worldX%sSpacing;
+  for(let tx=-off;tx<W+sSpacing;tx+=sSpacing){
+    pline(tx+rnd(0.4),railY-gauge-1,tx+rnd(0.4),railY+gauge+1,0.32,2.2,1);
+  }
+  pline(-8,railY-gauge/2,W+8,railY-gauge/2,0.68,1.4,14);
+  pline(-8,railY+gauge/2,W+8,railY+gauge/2,0.68,1.4,14);
+}
+
+// ─── Overhead ─────────────────────────────────────────────────────────────────
+function drawOverhead(groundY){
+  const W=canvas.width;
+  const wireY=groundY-92, poleSpacing=170, off=worldX%poleSpacing;
+  for(let px=-off;px<W+poleSpacing;px+=poleSpacing){
+    pline(px+rnd(0.5),groundY+3,px+rnd(0.5),wireY+2,0.42,1.1);
+    pline(px,wireY+2,px-22,wireY-7,0.36,0.8);
+    pline(px-22,wireY-7,px-22,wireY+4,0.28,0.6);
+    pline(px-22,wireY-7,px-8,wireY-14,0.22,0.5);
+    // insulator dot
+    ctx.save(); ctx.globalAlpha=0.3; ctx.strokeStyle=INK; ctx.lineWidth=0.7;
+    ctx.beginPath(); ctx.arc(px-22,wireY-7,2,0,Math.PI*2); ctx.stroke(); ctx.restore();
+  }
+  ctx.save(); ctx.strokeStyle=INK_MID; ctx.lineWidth=0.65;
+  ctx.globalAlpha=0.35; ctx.lineCap='round';
   ctx.beginPath();
-  for (let px = -off; px < W+poleSpacing; px += poleSpacing) {
-    ctx.moveTo(px+rnd(0.5), wireY+rnd(0.5));
-    ctx.quadraticCurveTo(px+poleSpacing/2+rnd(3), wireY+8+rnd(1),
-                         px+poleSpacing+rnd(0.5), wireY+rnd(0.5));
+  for(let px=-off;px<W+poleSpacing;px+=poleSpacing){
+    ctx.moveTo(px+rnd(0.4),wireY+rnd(0.4));
+    ctx.quadraticCurveTo(px+poleSpacing/2+rnd(4),wireY+9+rnd(1.5),px+poleSpacing+rnd(0.4),wireY+rnd(0.4));
   }
-  ctx.stroke();
-  ctx.restore();
+  ctx.stroke(); ctx.restore();
 }
 
-function drawStation(station, GY) {
-  const sx = station.x - worldX;
-  const ph = 7, pw = 95;
+// ─── Station ──────────────────────────────────────────────────────────────────
+function drawStation(station,groundY){
+  const sx=station.x-worldX;
+  const ph=8, pw=station.big?130:95;
+  hatch(sx-pw/2,groundY-ph,pw,ph,0.09,4,0);
+  pRect(sx-pw/2,groundY-ph,pw,ph,0.62,1.2);
 
-  // Platform — hatched stone look
-  hatch(sx-pw/2, GY-ph, pw, ph, 0.1, 4, 0);
-  pRect(sx-pw/2, GY-ph, pw, ph, 0.6, 1.2);
+  const sh=40,sw=station.big?70:52;
+  const roofY=groundY-ph-sh;
+  pline(sx-sw/2,groundY-ph,sx-sw/2,roofY,0.58,1);
+  pline(sx+sw/2,groundY-ph,sx+sw/2,roofY,0.58,1);
+  if(station.big){
+    pline(sx-sw/2+sw/3,groundY-ph,sx-sw/2+sw/3,roofY*1.02,0.4,0.6);
+    pline(sx-sw/2+sw*2/3,groundY-ph,sx-sw/2+sw*2/3,roofY*1.02,0.4,0.6);
+  }
+  pline(sx-sw/2-7,roofY,sx+sw/2+7,roofY,0.65,1.5);
+  pline(sx-sw/2-7,roofY,sx-sw/2-16,roofY-10,0.5,0.9);
+  pline(sx+sw/2+7,roofY,sx+sw/2+16,roofY-10,0.5,0.9);
+  pline(sx-sw/2-16,roofY-10,sx+sw/2+16,roofY-10,0.4,0.8);
+  hatch(sx-sw/2-16,roofY-10,sw+32,10,0.07,4,135);
 
-  // Shelter frame
-  const sh = 38, sw = 52;
-  const roofY = GY - ph - sh;
-  pline(sx-sw/2, GY-ph, sx-sw/2, roofY, 0.58, 1);
-  pline(sx+sw/2, GY-ph, sx+sw/2, roofY, 0.58, 1);
-  // Roof beam
-  pline(sx-sw/2-6, roofY, sx+sw/2+6, roofY, 0.62, 1.5);
-  // Roof slope
-  pline(sx-sw/2-6, roofY, sx-sw/2-14, roofY-9, 0.5, 1);
-  pline(sx+sw/2+6, roofY, sx+sw/2+14, roofY-9, 0.5, 1);
-  pline(sx-sw/2-14, roofY-9, sx+sw/2+14, roofY-9, 0.4, 0.8);
-  // Roof hatch
-  hatch(sx-sw/2-14, roofY-9, sw+28, 9, 0.08, 4, 135);
-  // Back wall faint
-  pRect(sx-sw/2, roofY, sw, sh*0.6, 0.15, 0.6);
-
-  // Name sign
+  // Name board
   ctx.save();
-  ctx.font = `italic ${Math.max(8,9)}px Georgia`;
-  ctx.fillStyle = INK;
-  ctx.globalAlpha = 0.65;
-  ctx.textAlign = 'center';
-  ctx.fillText(station.name, sx, roofY-14);
+  pRect(sx-sw/2,roofY-16,sw,12,0.35,0.6);
+  ctx.font=`italic ${Math.max(7,8)}px Georgia`;
+  ctx.fillStyle=INK; ctx.globalAlpha=0.65; ctx.textAlign='center';
+  ctx.fillText(station.name,sx,roofY-7);
   ctx.restore();
 
   // Waiting people
-  for (let i=0; i<station.waiting; i++) {
-    drawPerson(sx - 38 + i*11 + rnd(2), GY-ph, false);
+  for(let i=0;i<station.waiting;i++){
+    drawPerson(sx-pw/2+10+i*12+rnd(2),groundY-ph,false);
   }
 }
 
-function drawPerson(x, y, onboard) {
-  const h = onboard ? 15 : 20;
-  const alpha = onboard ? 0.55 : 0.62;
-  ctx.save(); ctx.globalAlpha = alpha;
-  ctx.strokeStyle = INK; ctx.lineCap='round';
-  // head
-  ctx.lineWidth = 0.8;
+// ─── Person ───────────────────────────────────────────────────────────────────
+function drawPerson(x,y,onboard){
+  const h=onboard?14:20;
+  const a=onboard?0.52:0.60;
+  ctx.save(); ctx.globalAlpha=a; ctx.strokeStyle=INK; ctx.lineCap='round';
+  ctx.lineWidth=0.8;
+  ctx.beginPath(); ctx.arc(x+rnd(0.4),y-h+rnd(0.4),2.8,0,Math.PI*2); ctx.stroke();
+  pline(x,y-h+3,x+rnd(1),y-h*0.38,a,0.85,2);
+  pline(x-4,y-h*0.56,x+4,y-h*0.56+rnd(1),a,0.75,1);
+  pline(x,y-h*0.38,x-3+rnd(1),y,a,0.85,2);
+  pline(x,y-h*0.38,x+3+rnd(1),y,a,0.85,2);
+  ctx.restore();
+}
+
+// ─── DT 8.13 Stadler Tango S ──────────────────────────────────────────────────
+// 5-section articulated tram, ~44m long in reality → ~310px on screen
+// Sections: A–B–C–B'–A' with articulations between them
+function drawDT813(cx, groundY){
+  // Total width on screen
+  const TW = 320;   // full train width
+  const TH = 46;    // car body height (low-floor)
+  const ty = groundY - TH - 2; // top of body
+  const railY = groundY + 3;
+
+  const left = cx - TW/2;
+
+  ctx.save();
+
+  // ── Shadow ──
+  hatch(left+10,groundY+2,TW-20,5,0.06,3,0);
+
+  // ── Body fill (very light, mostly paper) ──
+  ctx.save();
+  ctx.globalAlpha=0.09; ctx.fillStyle='#bbb';
+  ctx.fillRect(left,ty,TW,TH);
+  ctx.restore();
+
+  // Section widths: A(55) artic(8) B(60) artic(8) C(58) artic(8) B'(60) artic(8) A'(55) = 320
+  const sections=[
+    {x:left,       w:55, cap:'front'},
+    {x:left+63,    w:60, cap:'mid'},
+    {x:left+131,   w:58, cap:'mid'},
+    {x:left+197,   w:60, cap:'mid'},
+    {x:left+265,   w:55, cap:'rear'},
+  ];
+  const articulAt=[left+55, left+123, left+189, left+257];
+
+  // ── Roof ──
+  pline(left+12,ty,left+TW-12,ty,0.72,1.5,18);
+  // Roof detail line
+  pline(left+12,ty+4,left+TW-12,ty+4,0.22,0.6,12);
+
+  // ── Pantographs (2, on section B and B') ──
+  drawPantograph(left+95,ty,groundY-92);
+  drawPantograph(left+225,ty,groundY-92);
+
+  // ── Articulation bellows ──
+  for(const ax of articulAt){
+    // bellows — zigzag
+    ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=0.7; ctx.globalAlpha=0.55;
+    for(let z=0;z<3;z++){
+      const zy=ty+TH*0.15+z*(TH*0.7/3);
+      pline(ax,zy,ax+8,zy+TH*0.7/6,0.45,0.6,1);
+      pline(ax+8,zy+TH*0.7/6,ax,zy+TH*0.7/3,0.45,0.6,1);
+    }
+    ctx.restore();
+    // vertical divider marks
+    pline(ax,ty,ax,ty+TH,0.20,0.5,2);
+    pline(ax+8,ty,ax+8,ty+TH,0.20,0.5,2);
+  }
+
+  // ── Windows — Tango S has very large panoramic windows ──
+  // Section windows (skip articulation zones)
+  for(const sec of sections){
+    const winH=TH*0.62, winY=ty+TH*0.10;
+    const doorW=14;
+
+    if(sec.cap==='front'||sec.cap==='rear'){
+      // Cab section: windshield + 1 side window + door
+      drawCabSection(sec.x,ty,sec.w,TH,sec.cap==='rear');
+    } else {
+      // Passenger section: large windows + doors
+      drawPassSection(sec.x,ty,sec.w,TH);
+    }
+  }
+
+  // ── Outer body outline — drawn last for crispness ──
+  // Front nose (rounded)
+  drawNose(left,ty,TH,false);
+  // Rear nose
+  drawNose(left+TW,ty,TH,true);
+  // Top & bottom body lines
+  pline(left+14,ty,left+TW-14,ty,0.80,1.6,16);
+  pline(left+6, groundY-2,left+TW-6,groundY-2,0.75,1.4,14);
+
+  // ── Skirt / lower body line ──
+  pline(left+14,ty+TH*0.55,left+TW-14,ty+TH*0.55,0.28,0.7,14);
+
+  // ── Section seams ──
+  for(const sec of sections.slice(1)){
+    pline(sec.x,ty+2,sec.x,ty+TH-2,0.22,0.5);
+  }
+
+  // ── Bogies / wheels (5 bogies: under each section) ──
+  const bogiePositions=[left+27, left+93, left+160, left+227, left+293];
+  for(const bx of bogiePositions){
+    drawBogie(bx,groundY,railY);
+  }
+
+  // ── Destination display ──
+  ctx.save();
+  ctx.font='bold 5.5px Georgia'; ctx.fillStyle=INK;
+  ctx.globalAlpha=0.60; ctx.textAlign='center';
+  const ns2=stations[nextStnIdx];
+  ctx.fillText(ns2?ns2.name.substring(0,12):'—', left+27, ty+4);
+  // Line number box
+  pRect(left+14,ty+6,16,10,0.45,0.7);
+  ctx.font='bold 7px Georgia'; ctx.globalAlpha=0.55;
+  ctx.fillText('U9',left+22,ty+14);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawNose(baseX,ty,TH,rear){
+  // Stadler Tango nose: slightly tapered/angled lower, rounded top corner
+  const d=rear?-1:1;
+  const x0=baseX, x1=baseX+d*14;
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.6; ctx.globalAlpha=0.82; ctx.lineCap='round';
   ctx.beginPath();
-  ctx.arc(x+rnd(0.5), y-h+rnd(0.5), 3, 0, Math.PI*2);
+  ctx.moveTo(x0,ty+TH-2);
+  // lower angled apron
+  ctx.lineTo(x0+d*6, ty+TH+2);
+  ctx.lineTo(x0+d*14,ty+TH-2);
   ctx.stroke();
-  // body
-  pline(x, y-h+3.5, x+rnd(1), y-h*0.38, alpha, 0.9, 2);
-  // arms
-  pline(x-4, y-h*0.58, x+4, y-h*0.58+rnd(1), alpha, 0.8, 1);
-  // legs
-  pline(x, y-h*0.38, x-3+rnd(1), y, alpha, 0.9, 2);
-  pline(x, y-h*0.38, x+3+rnd(1), y, alpha, 0.9, 2);
+  // front face
+  ctx.beginPath();
+  ctx.moveTo(x0,ty+TH-2);
+  ctx.lineTo(x0,ty+8);
+  ctx.quadraticCurveTo(x0,ty+1,x0+d*8,ty+1);
+  ctx.lineTo(x1,ty+1);
+  ctx.stroke();
+  // headlight cluster
+  ctx.lineWidth=0.9; ctx.globalAlpha=0.55;
+  ctx.beginPath(); ctx.arc(x0+d*6,ty+TH*0.82,4,0,Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x0+d*6,ty+TH*0.58,2.5,0,Math.PI*2); ctx.stroke();
+  // windshield wiper mark
+  pline(x0+d*4,ty+16,x0+d*10,ty+30,0.2,0.5,2);
   ctx.restore();
 }
 
-function drawTram(x, GY) {
-  const TW = 132, TH = 54;
-  const ty = GY - TH + 3;
+function drawCabSection(sx,ty,sw,TH,mirrored){
+  const winH=TH*0.56, winY=ty+TH*0.10;
+  // windshield — large
+  const wsX = mirrored ? sx+sw*0.35 : sx+sw*0.08;
+  const wsW = sw*0.52;
+  ctx.save(); ctx.globalAlpha=0.07; ctx.fillStyle='#aaccdd';
+  ctx.fillRect(wsX,winY,wsW,winH); ctx.restore();
+  pRect(wsX+rnd(0.4),winY+rnd(0.4),wsW,winH,0.68,0.9);
+  // center post
+  pline(wsX+wsW/2,winY,wsX+wsW/2,winY+winH,0.35,0.6);
+  // side door
+  const dX=mirrored?sx+4:sx+sw-18;
+  pRect(dX,winY,14,winH*1.05,0.58,0.8);
+  pline(dX+7,winY,dX+7,winY+winH,0.25,0.5);
+}
 
-  ctx.save();
-
-  // Shadow — soft hatch under tram
-  hatch(x-TW/2+5, GY+2, TW-10, 6, 0.07, 4, 0);
-
-  // Body — paper fill with hatch shading
-  ctx.save();
-  ctx.globalAlpha = 0.12;
-  ctx.fillStyle = '#ccc';
-  ctx.fillRect(x-TW/2, ty, TW, TH);
-  ctx.restore();
-  hatch(x-TW/2, ty, TW, TH, 0.04, 9, 90);
-  // Shadow side (right side darker)
-  hatch(x+TW/2-20, ty, 20, TH, 0.06, 5, 90);
-
-  // Outline
-  pRect(x-TW/2, ty, TW, TH, 0.82, 1.8);
-
-  // Roof line
-  pline(x-TW/2+3, ty+6, x+TW/2-3, ty+6, 0.35, 0.7, 6);
-
-  // Side stripe
-  pline(x-TW/2, ty+TH*0.55, x+TW/2, ty+TH*0.55, 0.25, 0.6, 8);
-
-  // Windows — 6
-  const winW=15, winH=19;
-  const winY = ty+8;
-  const winStep = (TW-24)/5;
-  for (let i=0; i<6; i++) {
-    const wx2 = x - TW/2 + 12 + i*winStep;
-    // window fill — very faint
-    ctx.save(); ctx.globalAlpha=0.08; ctx.fillStyle='#aaccdd';
-    ctx.fillRect(wx2-winW/2, winY, winW, winH); ctx.restore();
-    // arch
-    ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=0.9; ctx.globalAlpha=0.75; ctx.lineCap='round';
-    ctx.beginPath();
-    ctx.moveTo(wx2-winW/2+rnd(0.5), winY+winH+rnd(0.5));
-    ctx.lineTo(wx2-winW/2+rnd(0.5), winY+5+rnd(0.5));
-    ctx.arc(wx2+rnd(0.4), winY+5, winW/2, Math.PI, 0);
-    ctx.lineTo(wx2+winW/2+rnd(0.5), winY+winH+rnd(0.5));
-    ctx.stroke();
-    ctx.restore();
-    // horizontal sill
-    pline(wx2-winW/2-1, winY+winH, wx2+winW/2+1, winY+winH, 0.45, 0.8);
-    // passenger
-    if (i>0 && i<5 && i<=pax) drawPerson(wx2, winY+winH-1, true);
+function drawPassSection(sx,ty,sw,TH){
+  const winH=TH*0.58, winY=ty+TH*0.10;
+  const doorW=16;
+  // Large panoramic window spanning most of section width
+  // Split: door | window | door | window
+  const doorCount=2;
+  const dPos=[sx+6, sx+sw-22];
+  for(const dx of dPos){
+    if(doorsOpen){
+      // open gap
+      pline(dx,winY,dx,winY+winH*0.15,0.5,0.8);
+      pline(dx+doorW,winY,dx+doorW,winY+winH*0.15,0.5,0.8);
+    } else {
+      pRect(dx+rnd(0.3),winY+rnd(0.3),doorW,winH*1.05,0.60,0.85);
+      pline(dx+doorW/2,winY,dx+doorW/2,winY+winH,0.25,0.5);
+    }
   }
-
-  // Door
-  const doorX = x - TW/2 + 26;
-  if (doorsOpen) {
-    // open door — gap
-    pline(doorX, ty+TH*0.22, doorX-9, ty+TH*0.22, 0.6, 1);
-    pline(doorX+13, ty+TH*0.22, doorX+22, ty+TH*0.22, 0.6, 1);
-    pline(doorX, ty+TH*0.22, doorX, ty+TH, 0.25, 0.6);
-  } else {
-    pRect(doorX, ty+TH*0.22, 13, TH*0.78, 0.65, 0.9);
-    pline(doorX+6.5, ty+TH*0.22, doorX+6.5, ty+TH, 0.3, 0.6);
+  // Big window between doors
+  const winX=sx+6+doorW+2;
+  const winW=sw-12-doorW*2-4;
+  if(winW>8){
+    ctx.save(); ctx.globalAlpha=0.07; ctx.fillStyle='#aaccdd';
+    ctx.fillRect(winX,winY,winW,winH); ctx.restore();
+    pRect(winX+rnd(0.3),winY+rnd(0.3),winW,winH,0.65,0.9);
+    // window mullion in center
+    if(winW>20) pline(winX+winW/2,winY,winX+winW/2,winY+winH,0.30,0.55);
+    // passengers
+    const paxSlots=Math.floor(winW/12);
+    for(let p=0;p<paxSlots;p++){
+      if(p<pax/2) drawPerson(winX+8+p*12, winY+winH-1, true);
+    }
   }
+}
 
-  // Bumpers
-  pline(x-TW/2, ty+TH*0.58, x-TW/2-10, ty+TH*0.70, 0.7, 2);
-  pline(x+TW/2, ty+TH*0.58, x+TW/2+10, ty+TH*0.70, 0.7, 2);
-  pline(x-TW/2-10, ty+TH*0.65, x-TW/2-10, ty+TH*0.78, 0.5, 1.5);
-  pline(x+TW/2+10, ty+TH*0.65, x+TW/2+10, ty+TH*0.78, 0.5, 1.5);
+function drawPantograph(cx,ty,wireY){
+  const baseY=ty;
+  pline(cx-12,baseY,cx-3,baseY-20,0.62,0.9);
+  pline(cx+12,baseY,cx+3,baseY-20,0.62,0.9);
+  pline(cx-3,baseY-20,cx+3,baseY-20,0.70,1.2);
+  pline(cx-16,baseY,cx+16,baseY,0.45,0.8); // base rail
+  pline(cx,baseY-20,cx+rnd(1),wireY+2,0.30,0.6);
+}
 
-  // Pantograph
-  const pantX = x+22;
-  const ptBaseY = ty, ptMidY = ty-22;
-  const wireY2 = GY-88;
-  pline(pantX-14, ptBaseY, pantX-4, ptMidY+6, 0.65, 1);
-  pline(pantX+14, ptBaseY, pantX+4, ptMidY+6, 0.65, 1);
-  pline(pantX-4, ptMidY+6, pantX+4, ptMidY+6, 0.72, 1.3);
-  pline(pantX, ptMidY+6, pantX+rnd(1), wireY2+2, 0.35, 0.7);
-
-  // Wheels
-  for (const wx2 of [x-TW/2+16, x-TW/2+46, x+TW/2-16, x+TW/2-46]) {
-    ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.3; ctx.globalAlpha=0.78; ctx.lineCap='round';
-    ctx.beginPath(); ctx.arc(wx2+rnd(0.5), GY+1, 9, 0, Math.PI*2); ctx.stroke();
-    ctx.restore();
+function drawBogie(cx,groundY,railY){
+  const fr=9; // wheel radius
+  const track=20; // wheel spacing
+  ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.2; ctx.globalAlpha=0.75; ctx.lineCap='round';
+  // bogie frame
+  pline(cx-track/2-fr,railY,cx+track/2+fr,railY,0.40,1.5,3);
+  // wheels
+  for(const wx of[cx-track/2, cx+track/2]){
+    ctx.beginPath(); ctx.arc(wx+rnd(0.4),railY,fr,0,Math.PI*2); ctx.stroke();
     // spokes
-    pline(wx2-6, GY-3, wx2+6, GY+5, 0.3, 0.6);
-    pline(wx2-6, GY+5, wx2+6, GY-3, 0.3, 0.6);
-    pline(wx2, GY-8, wx2, GY+10, 0.25, 0.5);
+    pline(wx-fr*0.7,railY-fr*0.5,wx+fr*0.7,railY+fr*0.5,0.25,0.5);
+    pline(wx-fr*0.7,railY+fr*0.5,wx+fr*0.7,railY-fr*0.5,0.25,0.5);
+    pline(wx,railY-fr,wx,railY+fr,0.22,0.4);
+    // hub
+    ctx.save(); ctx.globalAlpha=0.35;
+    ctx.beginPath(); ctx.arc(wx,railY,2.5,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
   }
-  // Axle
-  pline(x-TW/2+16, GY+1, x-TW/2+46, GY+1, 0.35, 0.8);
-  pline(x+TW/2-46, GY+1, x+TW/2-16, GY+1, 0.35, 0.8);
-
-  // Destination board
-  ctx.save();
-  ctx.font='bold 6px Georgia'; ctx.fillStyle=INK;
-  ctx.globalAlpha=0.55; ctx.textAlign='center';
-  const ns2 = stations[nextStationIdx];
-  ctx.fillText(ns2 ? ns2.name.substring(0,10) : '—', x-TW/2+30, ty+4);
-  ctx.restore();
-
+  // suspension springs (sketch marks)
+  for(const wx of[cx-track/2, cx+track/2]){
+    for(let s=0;s<3;s++){
+      pline(wx+rnd(1.5),railY-fr-2-s*3,wx+rnd(1.5),railY-fr-s*3-1,0.18,0.5,1);
+    }
+  }
   ctx.restore();
 }
 
