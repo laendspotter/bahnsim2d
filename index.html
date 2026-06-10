@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Bahnsim 2D</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #f0ebe0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Georgia', serif;
+}
+canvas {
+  display: block;
+  background: #ede8dc;
+  cursor: crosshair;
+}
+#hud {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 32px;
+  color: #5a4a3a;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+#hud span { border-bottom: 1px solid #b0a090; padding-bottom: 2px; }
+#keys {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  color: #9a8a7a;
+  font-size: 11px;
+  text-align: right;
+  line-height: 1.7;
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <span id="h-speed">0 km/h</span>
+  <span id="h-station">→ Hauptbahnhof</span>
+  <span id="h-pax">0 Fahrgäste</span>
+</div>
+<div id="keys">← → beschleunigen / bremsen<br>Leertaste: Türen</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// --- Noise helpers ---
+function rnd(n) { return (Math.random() - 0.5) * n; }
+function wobble(x, y, n=1.2) { return [x + rnd(n), y + rnd(n)]; }
+
+function sketchLine(x1, y1, x2, y2, alpha=0.7, width=1) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  const [ax, ay] = wobble(x1, y1);
+  const [bx, by] = wobble(x2, y2);
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(bx, by);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// --- World state ---
+const GROUND_Y = () => canvas.height * 0.72;
+let worldX = 0; // how far we've scrolled
+let tramX = 0;  // tram world position
+let speed = 0;  // pixels/sec
+let maxSpeed = 220;
+let accel = 60;
+let brake = 120;
+let autobrake = false;
+let doorsOpen = false;
+let doorTimer = 0;
+let boardingTimer = 0;
+let pax = 0;
+let dayTime = 0.3; // 0=night, 1=day, starts day
+
+const stationNames = [
+  'Hauptbahnhof','Marktplatz','Rathaus','Stadtpark','Universität',
+  'Westbahnhof','Schillerplatz','Goethestraße','Moritzbastei','Am Teich',
+  'Kirschblütenweg','Waldfriedhof','Industriestraße','Neugasse','Südring',
+  'Botanischer Garten','Fischmarkt','Lindenallee','Nordbahnhof','Alte Mühle',
+  'Dampfbad','Kupferhammer','Silbersee','Bergstation','Talblick'
+];
+
+// Generate stations
+const stations = [];
+let sx = 400;
+for (let i = 0; i < 200; i++) {
+  sx += 900 + Math.random() * 700;
+  stations.push({
+    x: sx,
+    name: stationNames[i % stationNames.length],
+    waiting: Math.floor(Math.random() * 6) + 1,
+    served: false
+  });
+}
+
+let nextStationIdx = 0;
+let stoppedAt = null;
+
+// --- Background objects ---
+const bgObjects = generateBgObjects();
+function generateBgObjects() {
+  const objs = [];
+  for (let i = 0; i < 600; i++) {
+    const wx = Math.random() * 180000;
+    const type = Math.random();
+    if (type < 0.35) objs.push({ type: 'tree', wx, layer: 2, h: 40 + Math.random() * 50 });
+    else if (type < 0.55) objs.push({ type: 'pinetree', wx, layer: 2, h: 50 + Math.random() * 60 });
+    else if (type < 0.75) objs.push({ type: 'house', wx, layer: 2, w: 60+Math.random()*40, h: 45+Math.random()*30 });
+    else if (type < 0.88) objs.push({ type: 'tree', wx, layer: 3, h: 20 + Math.random() * 25 });
+    else objs.push({ type: 'hill', wx, layer: 1, w: 300+Math.random()*400, h: 60+Math.random()*80 });
+  }
+  return objs.sort((a,b)=>a.layer-b.layer);
+}
+
+// Birds
+const birds = [];
+for (let i = 0; i < 12; i++) {
+  birds.push({
+    wx: Math.random() * 10000,
+    wy: 60 + Math.random() * 120,
+    speed: 30 + Math.random() * 60,
+    flap: Math.random() * Math.PI * 2
+  });
+}
+
+// --- Input ---
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// --- Main loop ---
+let last = 0;
+function loop(ts) {
+  const dt = Math.min((ts - last) / 1000, 0.05);
+  last = ts;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+function update(dt) {
+  dayTime = (dayTime + dt * 0.008) % 1; // full cycle ~125s
+
+  // Next station
+  while (nextStationIdx < stations.length - 1 && stations[nextStationIdx].served) nextStationIdx++;
+  const ns = stations[nextStationIdx];
+  const dist = ns.x - tramX;
+
+  // Auto-approach: brake when close
+  const brakeDist = (speed * speed) / (2 * brake) + 30;
+  autobrake = (dist < brakeDist + 20 && dist > -10 && !stoppedAt);
+
+  // Stop at station
+  if (dist <= 0 && !stoppedAt && speed < 5) {
+    speed = 0;
+    stoppedAt = ns;
+    doorsOpen = false;
+    doorTimer = 0.6; // brief pause before doors open
+    boardingTimer = 2.5;
+  }
+
+  // Doors & boarding
+  if (stoppedAt) {
+    doorTimer -= dt;
+    if (doorTimer <= 0 && !doorsOpen) doorsOpen = true;
+    if (doorsOpen) {
+      boardingTimer -= dt;
+      if (boardingTimer <= 0) {
+        // board passengers
+        const boarding = Math.min(stoppedAt.waiting, 8 - pax);
+        pax += boarding;
+        // some alight
+        const alighting = Math.min(Math.floor(Math.random() * 3) + 1, pax);
+        pax = Math.max(0, pax - alighting);
+        stoppedAt.waiting = 0;
+        stoppedAt.served = true;
+        stoppedAt = null;
+        doorsOpen = false;
+      }
+    }
+  }
+
+  // Speed control
+  if (!stoppedAt) {
+    if ((keys['ArrowRight'] || keys['KeyD']) && !autobrake) {
+      speed = Math.min(maxSpeed, speed + accel * dt);
+    } else if (keys['ArrowLeft'] || keys['KeyA']) {
+      speed = Math.max(0, speed - brake * dt);
+    } else if (autobrake) {
+      speed = Math.max(0, speed - brake * dt);
+    } else {
+      // Gentle coast
+      speed = Math.min(maxSpeed * 0.55, speed + accel * 0.3 * dt);
+    }
+  }
+
+  tramX += speed * dt;
+  worldX = tramX - canvas.width * 0.35;
+
+  // Update birds
+  for (const b of birds) {
+    b.wx += b.speed * dt;
+    b.flap += dt * 4;
+    if (b.wx - worldX * 0.1 > canvas.width + 100) b.wx -= 12000;
+  }
+
+  // Update HUD
+  const kmh = Math.round(speed * 3.6 / 10) * 10;
+  document.getElementById('h-speed').textContent = kmh + ' km/h';
+  document.getElementById('h-station').textContent = '→ ' + ns.name + (dist < 200 ? ' ●' : '');
+  document.getElementById('h-pax').textContent = pax + ' Fahrgäste';
+}
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  const GY = GROUND_Y();
+  ctx.clearRect(0, 0, W, H);
+
+  // Sky
+  const dayAmt = Math.sin(dayTime * Math.PI); // 0=night, 1=day
+  const skyTop = lerpColor([20,18,35], [185,210,235], dayAmt);
+  const skyBot = lerpColor([40,35,55], [220,230,210], dayAmt);
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, GY);
+  skyGrad.addColorStop(0, rgbStr(skyTop));
+  skyGrad.addColorStop(1, rgbStr(skyBot));
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, GY);
+
+  // Paper texture overlay
+  ctx.save();
+  ctx.globalAlpha = 0.04;
+  for (let i = 0; i < W; i += 3) {
+    for (let j = 0; j < H; j += 3) {
+      if (Math.random() > 0.5) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(i, j, 1, 1);
+      }
+    }
+  }
+  ctx.restore();
+
+  // Sun/Moon
+  const sunX = ((dayTime * 1.4 - 0.2) % 1) * W;
+  const sunY = GY * 0.25 + Math.sin(dayTime * Math.PI) * (-GY * 0.15);
+  if (dayAmt > 0.1) {
+    ctx.save();
+    ctx.globalAlpha = dayAmt * 0.6;
+    ctx.strokeStyle = '#c8b060';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#ede080';
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  } else {
+    ctx.save();
+    ctx.globalAlpha = 0.7;
+    ctx.fillStyle = '#e0ddd0';
+    ctx.beginPath();
+    ctx.arc(W * 0.7, GY * 0.2, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Stars
+  if (dayAmt < 0.5) {
+    ctx.save();
+    ctx.globalAlpha = (0.5 - dayAmt) * 1.5;
+    ctx.fillStyle = '#fff';
+    for (let i = 0; i < 60; i++) {
+      const sx2 = ((i * 137.5) % 1) * W;
+      const sy = ((i * 97.3) % 0.6) * GY;
+      ctx.fillRect(sx2, sy, 1.2, 1.2);
+    }
+    ctx.restore();
+  }
+
+  ctx.strokeStyle = '#3a3028';
+
+  // Layer 1: far hills
+  drawLayer(bgObjects.filter(o=>o.layer===1), 0.08, GY, dayAmt);
+  // Layer 2: mid trees/houses
+  drawLayer(bgObjects.filter(o=>o.layer===2), 0.35, GY, dayAmt);
+  // Layer 3: near trees
+  drawLayer(bgObjects.filter(o=>o.layer===3), 0.75, GY, dayAmt);
+
+  // Birds
+  for (const b of birds) {
+    const bsx = b.wx - worldX * 0.12;
+    if (bsx < -20 || bsx > W + 20) continue;
+    drawBird(bsx, b.wy, b.flap, dayAmt);
+  }
+
+  // Ground
+  const groundGrad = ctx.createLinearGradient(0, GY, 0, H);
+  const gc1 = lerpColor([60,55,45], [140,130,110], dayAmt);
+  const gc2 = lerpColor([30,28,22], [100,95,80], dayAmt);
+  groundGrad.addColorStop(0, rgbStr(gc1));
+  groundGrad.addColorStop(1, rgbStr(gc2));
+  ctx.fillStyle = groundGrad;
+  ctx.fillRect(0, GY, W, H - GY);
+
+  // Track
+  drawTrack(GY, dayAmt);
+
+  // Overhead wire & poles
+  drawOverhead(GY, dayAmt);
+
+  // Stations
+  const visStations = stations.filter(s => {
+    const sx2 = s.x - worldX;
+    return sx2 > -200 && sx2 < W + 200;
+  });
+  for (const s of visStations) drawStation(s, GY, dayAmt);
+
+  // Tram
+  const tramScreenX = tramX - worldX;
+  drawTram(tramScreenX, GY, dayAmt);
+
+  // Vignette
+  const vig = ctx.createRadialGradient(W/2, H/2, H*0.2, W/2, H/2, H*0.8);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.35)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawLayer(objs, parallax, GY, dayAmt) {
+  for (const o of objs) {
+    const sx = o.wx - worldX * parallax;
+    if (sx < -300 || sx > canvas.width + 300) continue;
+    const alpha = 0.25 + dayAmt * 0.5;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = '#3a3028';
+    ctx.fillStyle = 'rgba(60,55,45,0.15)';
+    if (o.type === 'tree') drawTree(sx, GY - (1-parallax)*80, o.h, parallax);
+    else if (o.type === 'pinetree') drawPineTree(sx, GY - (1-parallax)*80, o.h, parallax);
+    else if (o.type === 'house') drawHouse(sx, GY - (1-parallax)*60, o.w, o.h, parallax);
+    else if (o.type === 'hill') drawHill(sx, GY - (1-parallax)*60, o.w, o.h, parallax);
+    ctx.restore();
+  }
+}
+
+function drawTree(x, groundY, h, scale) {
+  const w = h * 0.7;
+  ctx.lineWidth = scale < 0.5 ? 0.6 : 1;
+  // trunk
+  sketchLine(x, groundY, x, groundY - h * 0.4, 0.8, scale < 0.5 ? 0.5 : 1);
+  // canopy
+  ctx.beginPath();
+  ctx.ellipse(x, groundY - h * 0.65, w * 0.5, h * 0.45, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  // inner detail
+  for (let i = 0; i < 3; i++) {
+    sketchLine(x + rnd(w*0.3), groundY - h*0.4 - i*h*0.1,
+               x + rnd(w*0.4), groundY - h*0.7 - i*h*0.05, 0.4, 0.5);
+  }
+}
+
+function drawPineTree(x, groundY, h, scale) {
+  ctx.lineWidth = scale < 0.5 ? 0.6 : 1;
+  sketchLine(x, groundY, x, groundY - h, 0.8, scale < 0.5 ? 0.5 : 1);
+  const layers = 4;
+  for (let i = 0; i < layers; i++) {
+    const ly = groundY - h * (0.15 + i * 0.22);
+    const lw = h * 0.35 * (1 - i * 0.18);
+    sketchLine(x - lw, ly + h*0.05, x, ly - h*0.12, 0.7, 0.7);
+    sketchLine(x + lw, ly + h*0.05, x, ly - h*0.12, 0.7, 0.7);
+  }
+}
+
+function drawHouse(x, groundY, w, h, scale) {
+  ctx.lineWidth = scale < 0.5 ? 0.6 : 1;
+  // body
+  ctx.strokeRect(x - w/2 + rnd(1), groundY - h + rnd(1), w + rnd(1), h + rnd(1));
+  // roof
+  ctx.beginPath();
+  ctx.moveTo(x - w/2 - 4 + rnd(1), groundY - h + rnd(1));
+  ctx.lineTo(x + rnd(1), groundY - h - h*0.5 + rnd(2));
+  ctx.lineTo(x + w/2 + 4 + rnd(1), groundY - h + rnd(1));
+  ctx.stroke();
+  // window
+  if (scale > 0.3) {
+    ctx.strokeRect(x - 6 + rnd(1), groundY - h * 0.55 + rnd(1), 12, 10);
+  }
+}
+
+function drawHill(x, groundY, w, h, scale) {
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(x - w/2, groundY);
+  ctx.quadraticCurveTo(x + rnd(20), groundY - h + rnd(10), x + w/2, groundY);
+  ctx.stroke();
+}
+
+function drawBird(x, y, flap, dayAmt) {
+  ctx.save();
+  ctx.globalAlpha = 0.3 + dayAmt * 0.3;
+  ctx.strokeStyle = '#2a2018';
+  ctx.lineWidth = 0.8;
+  const wing = Math.sin(flap) * 4;
+  ctx.beginPath();
+  ctx.moveTo(x - 8, y + wing);
+  ctx.quadraticCurveTo(x - 4, y, x, y + 2);
+  ctx.quadraticCurveTo(x + 4, y, x + 8, y + wing);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTrack(GY, dayAmt) {
+  const W = canvas.width;
+  const railY = GY + 4;
+  const gauge = 14;
+  const alpha = 0.4 + dayAmt * 0.3;
+
+  ctx.save();
+  ctx.strokeStyle = '#4a4035';
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = alpha;
+
+  // Rails
+  sketchLine(-10, railY - gauge/2, W + 10, railY - gauge/2, alpha, 1.5);
+  sketchLine(-10, railY + gauge/2, W + 10, railY + gauge/2, alpha, 1.5);
+
+  // Sleepers
+  const sleeperSpacing = 22;
+  const offsetX = worldX % sleeperSpacing;
+  for (let sx = -offsetX; sx < W + sleeperSpacing; sx += sleeperSpacing) {
+    sketchLine(sx + rnd(0.5), railY - gauge, sx + rnd(0.5), railY + gauge, alpha * 0.7, 2.5);
+  }
+  ctx.restore();
+}
+
+function drawOverhead(GY, dayAmt) {
+  const W = canvas.width;
+  const wireY = GY - 90;
+  const poleSpacing = 180;
+  const alpha = 0.3 + dayAmt * 0.2;
+
+  // Wire
+  ctx.save();
+  ctx.strokeStyle = '#5a5045';
+  ctx.lineWidth = 0.8;
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  const offsetX = worldX % poleSpacing;
+  for (let px = -offsetX; px < W + poleSpacing; px += poleSpacing) {
+    const catY = wireY + 6; // slight sag
+    ctx.moveTo(px + rnd(0.5), wireY);
+    ctx.quadraticCurveTo(px + poleSpacing/2, catY, px + poleSpacing + rnd(0.5), wireY);
+  }
+  ctx.stroke();
+
+  // Poles
+  for (let px = -offsetX; px < W + poleSpacing; px += poleSpacing) {
+    const poleX = px + rnd(0.5);
+    sketchLine(poleX, GY + 4, poleX, wireY, alpha, 1.2);
+    // arm
+    sketchLine(poleX, wireY, poleX - 18, wireY - 8, alpha * 0.8, 0.8);
+    sketchLine(poleX - 18, wireY - 8, poleX - 18, wireY, alpha * 0.6, 0.7);
+  }
+  ctx.restore();
+}
+
+function drawStation(station, GY, dayAmt) {
+  const sx = station.x - worldX;
+  const alpha = 0.5 + dayAmt * 0.3;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#3a3028';
+
+  // Platform
+  ctx.lineWidth = 1.5;
+  const pw = 90, ph = 8;
+  ctx.fillStyle = 'rgba(90,80,65,0.2)';
+  ctx.fillRect(sx - pw/2, GY - ph, pw, ph);
+  ctx.strokeRect(sx - pw/2 + rnd(0.5), GY - ph + rnd(0.5), pw, ph);
+
+  // Shelter
+  ctx.lineWidth = 1;
+  const sw = 50, sh = 35;
+  const roofY = GY - ph - sh;
+  sketchLine(sx - sw/2, GY - ph, sx - sw/2, roofY, alpha, 1);
+  sketchLine(sx + sw/2, GY - ph, sx + sw/2, roofY, alpha, 1);
+  sketchLine(sx - sw/2 - 5, roofY, sx + sw/2 + 5, roofY, alpha, 1.5);
+  // roof slope
+  sketchLine(sx - sw/2 - 5, roofY, sx - sw/2 - 12, roofY - 8, alpha * 0.7, 1);
+  sketchLine(sx + sw/2 + 5, roofY, sx + sw/2 + 12, roofY - 8, alpha * 0.7, 1);
+
+  // Sign
+  ctx.font = `${Math.max(8, 9 * (canvas.width / 1400))}px Georgia`;
+  ctx.fillStyle = '#3a3028';
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = 'center';
+  ctx.fillText(station.name, sx, roofY - 12);
+
+  // Waiting passengers
+  for (let i = 0; i < station.waiting; i++) {
+    const px = sx - 35 + i * 11 + rnd(2);
+    const py = GY - ph;
+    drawPerson(px, py, false, dayAmt);
+  }
+
+  ctx.restore();
+}
+
+function drawPerson(x, y, boarded, dayAmt) {
+  const h = boarded ? 14 : 18;
+  const alpha = boarded ? 0.6 : (0.4 + dayAmt * 0.4);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#2a2018';
+  ctx.lineWidth = 0.9;
+  // head
+  ctx.beginPath();
+  ctx.arc(x + rnd(0.5), y - h + rnd(0.5), 3, 0, Math.PI * 2);
+  ctx.stroke();
+  // body
+  sketchLine(x, y - h + 3, x, y - h * 0.35, alpha, 0.9);
+  // arms
+  sketchLine(x - 4, y - h * 0.55, x + 4, y - h * 0.55, alpha, 0.8);
+  // legs
+  sketchLine(x, y - h * 0.35, x - 3, y, alpha, 0.9);
+  sketchLine(x, y - h * 0.35, x + 3, y, alpha, 0.9);
+  ctx.restore();
+}
+
+function drawTram(x, GY, dayAmt) {
+  const W2 = 130, H2 = 52;
+  const ty = GY - H2 + 4;
+  const alpha = 0.75 + dayAmt * 0.15;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#2a2018';
+
+  // Shadow
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(x, GY + 5, W2 * 0.55, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Body fill
+  ctx.fillStyle = doorsOpen ? 'rgba(200,190,170,0.35)' : 'rgba(210,200,180,0.25)';
+  ctx.fillRect(x - W2/2 + rnd(0.3), ty + rnd(0.3), W2 + rnd(0.3), H2 + rnd(0.3));
+  ctx.lineWidth = 1.8;
+  ctx.strokeRect(x - W2/2 + rnd(0.5), ty + rnd(0.5), W2, H2);
+
+  // Windows (6)
+  const winW = 16, winH = 18, winY = ty + 8;
+  for (let i = 0; i < 6; i++) {
+    const wx = x - W2/2 + 12 + i * (W2 - 20) / 5;
+    ctx.lineWidth = 0.9;
+    ctx.fillStyle = 'rgba(180,210,220,0.15)';
+    ctx.fillRect(wx - winW/2 + rnd(0.3), winY + rnd(0.3), winW, winH);
+    ctx.strokeRect(wx - winW/2 + rnd(0.5), winY + rnd(0.5), winW, winH);
+    // arch top
+    ctx.beginPath();
+    ctx.arc(wx + rnd(0.3), winY + rnd(0.3), winW/2, Math.PI, 0);
+    ctx.stroke();
+
+    // Passenger silhouettes
+    if (i > 0 && i < 5 && i <= pax) {
+      drawPerson(wx, winY + winH - 2, true, dayAmt);
+    }
+  }
+
+  // Door (front-ish)
+  const doorX = x - W2/2 + 28;
+  ctx.lineWidth = 1;
+  if (doorsOpen) {
+    sketchLine(doorX, ty + H2 * 0.2, doorX - 8, ty + H2 * 0.2, alpha, 1);
+    sketchLine(doorX + 14, ty + H2 * 0.2, doorX + 22, ty + H2 * 0.2, alpha, 1);
+  } else {
+    ctx.strokeRect(doorX + rnd(0.5), ty + H2*0.2 + rnd(0.5), 14, H2 * 0.75);
+    sketchLine(doorX + 7, ty + H2 * 0.2, doorX + 7, ty + H2 * 0.95, alpha * 0.5, 0.7);
+  }
+
+  // Bumpers
+  ctx.lineWidth = 2;
+  sketchLine(x - W2/2, ty + H2 * 0.6, x - W2/2 - 8, ty + H2 * 0.7, alpha, 2);
+  sketchLine(x + W2/2, ty + H2 * 0.6, x + W2/2 + 8, ty + H2 * 0.7, alpha, 2);
+
+  // Roof detail / stripe
+  ctx.lineWidth = 0.8;
+  sketchLine(x - W2/2 + 2, ty + 5, x + W2/2 - 2, ty + 5, alpha * 0.5, 0.7);
+
+  // Pantograph
+  const pantX = x + 20;
+  const pantBaseY = ty;
+  const pantTopY = pantBaseY - 28;
+  const wireContactY = GY - 90;
+  ctx.lineWidth = 1;
+  sketchLine(pantX - 15, pantBaseY, pantX - 5, pantTopY + 8, alpha * 0.8, 1);
+  sketchLine(pantX + 15, pantBaseY, pantX + 5, pantTopY + 8, alpha * 0.8, 1);
+  sketchLine(pantX - 5, pantTopY + 8, pantX + 5, pantTopY + 8, alpha * 0.9, 1.2);
+  // contact wire arm
+  sketchLine(pantX, pantTopY + 8, pantX, wireContactY + 2, alpha * 0.5, 0.6);
+
+  // Wheels
+  const wheels = [x - W2/2 + 18, x - W2/2 + 50, x + W2/2 - 18, x + W2/2 - 50];
+  for (const wx of wheels) {
+    ctx.beginPath();
+    ctx.arc(wx + rnd(0.5), GY + 2, 8, 0, Math.PI * 2);
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    // spoke
+    sketchLine(wx - 5, GY, wx + 5, GY + 4, alpha * 0.4, 0.6);
+    sketchLine(wx, GY - 5, wx, GY + 7, alpha * 0.4, 0.6);
+  }
+
+  // Destination sign
+  ctx.font = '7px Georgia';
+  ctx.fillStyle = '#2a2018';
+  ctx.globalAlpha = alpha * 0.8;
+  ctx.textAlign = 'center';
+  const ns = stations[nextStationIdx];
+  ctx.fillText(ns ? ns.name.substring(0,10) : '—', x - W2/2 + 28, ty + 4);
+
+  ctx.restore();
+}
+
+// --- Color utilities ---
+function lerpColor(a, b, t) {
+  return [
+    a[0] + (b[0]-a[0]) * t,
+    a[1] + (b[1]-a[1]) * t,
+    a[2] + (b[2]-a[2]) * t
+  ];
+}
+function rgbStr([r,g,b]) {
+  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
