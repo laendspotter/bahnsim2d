@@ -6,44 +6,24 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-  background: #f0ebe0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  overflow: hidden;
+  background: #e8e2d4;
+  display: flex; align-items: center; justify-content: center;
+  height: 100vh; overflow: hidden;
   font-family: 'Georgia', serif;
 }
-canvas {
-  display: block;
-  background: #ede8dc;
-  cursor: crosshair;
-}
+canvas { display: block; }
 #hud {
-  position: fixed;
-  bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 32px;
-  color: #5a4a3a;
-  font-size: 13px;
-  letter-spacing: 0.05em;
-  opacity: 0.85;
-  pointer-events: none;
-  user-select: none;
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 28px;
+  color: #444; font-size: 12px; letter-spacing: 0.08em;
+  opacity: 0.7; pointer-events: none; user-select: none;
+  font-style: italic;
 }
-#hud span { border-bottom: 1px solid #b0a090; padding-bottom: 2px; }
+#hud span { border-bottom: 1px solid #888; padding-bottom: 1px; }
 #keys {
-  position: fixed;
-  top: 14px;
-  right: 18px;
-  color: #9a8a7a;
-  font-size: 11px;
-  text-align: right;
-  line-height: 1.7;
-  pointer-events: none;
+  position: fixed; top: 12px; right: 16px;
+  color: #888; font-size: 10px; text-align: right;
+  line-height: 1.8; pointer-events: none; font-style: italic;
 }
 </style>
 </head>
@@ -54,617 +34,645 @@ canvas {
   <span id="h-station">→ Hauptbahnhof</span>
   <span id="h-pax">0 Fahrgäste</span>
 </div>
-<div id="keys">← → beschleunigen / bremsen<br>Leertaste: Türen</div>
+<div id="keys">← → fahren / bremsen</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
+// Paper texture offscreen
+const paperCanvas = document.createElement('canvas');
+const paperCtx = paperCanvas.getContext('2d');
+
 function resize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  buildPaper();
 }
+
+function buildPaper() {
+  paperCanvas.width = canvas.width;
+  paperCanvas.height = canvas.height;
+  // Base cream
+  paperCtx.fillStyle = '#ece7da';
+  paperCtx.fillRect(0, 0, paperCanvas.width, paperCanvas.height);
+  // Grain
+  const id = paperCtx.getImageData(0, 0, paperCanvas.width, paperCanvas.height);
+  const d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() - 0.5) * 18;
+    d[i]   = Math.max(0, Math.min(255, d[i]   + n));
+    d[i+1] = Math.max(0, Math.min(255, d[i+1] + n * 0.9));
+    d[i+2] = Math.max(0, Math.min(255, d[i+2] + n * 0.7));
+  }
+  paperCtx.putImageData(id, 0, 0);
+  // Horizontal fiber lines
+  paperCtx.save();
+  for (let y = 0; y < paperCanvas.height; y += 3 + Math.random() * 4) {
+    paperCtx.globalAlpha = Math.random() * 0.03;
+    paperCtx.strokeStyle = '#b0a080';
+    paperCtx.lineWidth = 0.4;
+    paperCtx.beginPath();
+    paperCtx.moveTo(0, y);
+    paperCtx.lineTo(paperCanvas.width, y + (Math.random()-0.5)*2);
+    paperCtx.stroke();
+  }
+  paperCtx.restore();
+}
+
 resize();
 window.addEventListener('resize', resize);
 
-// --- Noise helpers ---
-function rnd(n) { return (Math.random() - 0.5) * n; }
-function wobble(x, y, n=1.2) { return [x + rnd(n), y + rnd(n)]; }
+// Pencil stroke color — pure graphite
+const INK = '#2c2820';
+const INK_LIGHT = '#5a5248';
+const INK_FAINT = '#8a8278';
 
-function sketchLine(x1, y1, x2, y2, alpha=0.7, width=1) {
+// Noise
+function rnd(n) { return (Math.random() - 0.5) * n; }
+
+// Draw a wobbly pencil line — breaks into short segments with jitter
+function pline(x1, y1, x2, y2, alpha=0.65, lw=1, segs=3) {
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.lineWidth = width;
+  ctx.lineWidth = lw;
+  ctx.strokeStyle = INK;
+  ctx.lineCap = 'round';
   ctx.beginPath();
-  const [ax, ay] = wobble(x1, y1);
-  const [bx, by] = wobble(x2, y2);
-  ctx.moveTo(ax, ay);
-  ctx.lineTo(bx, by);
+  ctx.moveTo(x1 + rnd(0.8), y1 + rnd(0.8));
+  for (let s = 1; s <= segs; s++) {
+    const t = s / segs;
+    const mx = x1 + (x2 - x1) * t + rnd(1.2);
+    const my = y1 + (y2 - y1) * t + rnd(1.2);
+    ctx.lineTo(mx, my);
+  }
+  ctx.stroke();
+  // Second ghost pass for pencil feel
+  ctx.globalAlpha = alpha * 0.18;
+  ctx.lineWidth = lw * 2.2;
+  ctx.beginPath();
+  ctx.moveTo(x1 + rnd(1), y1 + rnd(1));
+  ctx.lineTo(x2 + rnd(1), y2 + rnd(1));
   ctx.stroke();
   ctx.restore();
 }
 
-// --- World state ---
-const GROUND_Y = () => canvas.height * 0.72;
-let worldX = 0; // how far we've scrolled
-let tramX = 0;  // tram world position
-let speed = 0;  // pixels/sec
-let maxSpeed = 220;
-let accel = 60;
-let brake = 120;
-let autobrake = false;
-let doorsOpen = false;
-let doorTimer = 0;
-let boardingTimer = 0;
-let pax = 0;
-let dayTime = 0.3; // 0=night, 1=day, starts day
+// Sketch rect with wobbly corners
+function pRect(x, y, w, h, alpha=0.65, lw=1) {
+  pline(x, y, x+w, y, alpha, lw);
+  pline(x+w, y, x+w, y+h, alpha, lw);
+  pline(x+w, y+h, x, y+h, alpha, lw);
+  pline(x, y+h, x, y, alpha, lw);
+}
+
+// Hatching for shadow/fill
+function hatch(x, y, w, h, alpha=0.12, spacing=5, angle=45) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = INK;
+  ctx.lineWidth = 0.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  const rad = angle * Math.PI / 180;
+  const diagLen = Math.sqrt(w*w + h*h) * 1.5;
+  const step = spacing;
+  for (let d = -diagLen; d < diagLen; d += step) {
+    const cx2 = x + w/2, cy2 = y + h/2;
+    const ax = cx2 + d * Math.cos(rad + Math.PI/2) - diagLen * Math.cos(rad);
+    const ay = cy2 + d * Math.sin(rad + Math.PI/2) - diagLen * Math.sin(rad);
+    const bx = cx2 + d * Math.cos(rad + Math.PI/2) + diagLen * Math.cos(rad);
+    const by = cy2 + d * Math.sin(rad + Math.PI/2) + diagLen * Math.sin(rad);
+    // Clip to rect
+    const pts = clipLineToRect(ax, ay, bx, by, x, y, x+w, y+h);
+    if (pts) {
+      ctx.moveTo(pts[0] + rnd(0.4), pts[1] + rnd(0.4));
+      ctx.lineTo(pts[2] + rnd(0.4), pts[3] + rnd(0.4));
+    }
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function clipLineToRect(ax, ay, bx, by, x0, y0, x1, y1) {
+  // Cohen-Sutherland simplified
+  let t0 = 0, t1 = 1;
+  const dx = bx - ax, dy = by - ay;
+  const tests = [
+    [-dx, ax - x0], [dx, x1 - ax],
+    [-dy, ay - y0], [dy, y1 - ay]
+  ];
+  for (const [p, q] of tests) {
+    if (p === 0) { if (q < 0) return null; continue; }
+    const r = q / p;
+    if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+    else { if (r < t0) return null; if (r < t1) t1 = r; }
+  }
+  return [ax + t0*dx, ay + t0*dy, ax + t1*dx, ay + t1*dy];
+}
+
+// ---- World ----
+const GROUND_Y = () => canvas.height * 0.70;
+let worldX = 0, tramX = 0, speed = 0;
+const maxSpeed = 200, accel = 55, brake = 115;
+let autobrake = false, doorsOpen = false, doorTimer = 0, boardingTimer = 0, pax = 0;
 
 const stationNames = [
   'Hauptbahnhof','Marktplatz','Rathaus','Stadtpark','Universität',
   'Westbahnhof','Schillerplatz','Goethestraße','Moritzbastei','Am Teich',
-  'Kirschblütenweg','Waldfriedhof','Industriestraße','Neugasse','Südring',
+  'Kirschblütenweg','Waldfriedhof','Industriestr.','Neugasse','Südring',
   'Botanischer Garten','Fischmarkt','Lindenallee','Nordbahnhof','Alte Mühle',
   'Dampfbad','Kupferhammer','Silbersee','Bergstation','Talblick'
 ];
 
-// Generate stations
 const stations = [];
-let sx = 400;
+let sx2 = 400;
 for (let i = 0; i < 200; i++) {
-  sx += 900 + Math.random() * 700;
-  stations.push({
-    x: sx,
-    name: stationNames[i % stationNames.length],
-    waiting: Math.floor(Math.random() * 6) + 1,
-    served: false
-  });
+  sx2 += 880 + Math.random() * 650;
+  stations.push({ x: sx2, name: stationNames[i % stationNames.length],
+    waiting: Math.floor(Math.random()*6)+1, served: false });
 }
+let nextStationIdx = 0, stoppedAt = null;
 
-let nextStationIdx = 0;
-let stoppedAt = null;
-
-// --- Background objects ---
-const bgObjects = generateBgObjects();
-function generateBgObjects() {
-  const objs = [];
-  for (let i = 0; i < 600; i++) {
-    const wx = Math.random() * 180000;
-    const type = Math.random();
-    if (type < 0.35) objs.push({ type: 'tree', wx, layer: 2, h: 40 + Math.random() * 50 });
-    else if (type < 0.55) objs.push({ type: 'pinetree', wx, layer: 2, h: 50 + Math.random() * 60 });
-    else if (type < 0.75) objs.push({ type: 'house', wx, layer: 2, w: 60+Math.random()*40, h: 45+Math.random()*30 });
-    else if (type < 0.88) objs.push({ type: 'tree', wx, layer: 3, h: 20 + Math.random() * 25 });
-    else objs.push({ type: 'hill', wx, layer: 1, w: 300+Math.random()*400, h: 60+Math.random()*80 });
-  }
-  return objs.sort((a,b)=>a.layer-b.layer);
+// Background elements — pre-seeded
+const bgElems = [];
+for (let i = 0; i < 700; i++) {
+  const wx = Math.random() * 200000;
+  const r = Math.random();
+  if (r < 0.28) bgElems.push({ type:'tree',    wx, layer:2, h: 45+Math.random()*55 });
+  else if (r < 0.50) bgElems.push({ type:'pine',wx, layer:2, h: 55+Math.random()*65 });
+  else if (r < 0.67) bgElems.push({ type:'house',wx, layer:2, w:55+Math.random()*45, h:40+Math.random()*35 });
+  else if (r < 0.80) bgElems.push({ type:'tree', wx, layer:3, h: 22+Math.random()*28 });
+  else if (r < 0.90) bgElems.push({ type:'pine', wx, layer:3, h: 18+Math.random()*22 });
+  else bgElems.push({ type:'hill', wx, layer:1, w:280+Math.random()*420, h:55+Math.random()*90 });
 }
+bgElems.sort((a,b)=>a.layer-b.layer);
 
-// Birds
-const birds = [];
-for (let i = 0; i < 12; i++) {
-  birds.push({
-    wx: Math.random() * 10000,
-    wy: 60 + Math.random() * 120,
-    speed: 30 + Math.random() * 60,
-    flap: Math.random() * Math.PI * 2
-  });
-}
+const birds = Array.from({length:10}, () => ({
+  wx: Math.random()*8000, wy: 50+Math.random()*100,
+  spd: 25+Math.random()*55, flap: Math.random()*Math.PI*2
+}));
 
-// --- Input ---
+// Input
 const keys = {};
-window.addEventListener('keydown', e => {
-  keys[e.code] = true;
-  if (e.code === 'Space') e.preventDefault();
-});
-window.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('keydown', e => { keys[e.code]=true; if(e.code==='Space') e.preventDefault(); });
+window.addEventListener('keyup', e => { keys[e.code]=false; });
 
-// --- Main loop ---
+// Loop
 let last = 0;
 function loop(ts) {
-  const dt = Math.min((ts - last) / 1000, 0.05);
-  last = ts;
-  update(dt);
-  draw();
+  const dt = Math.min((ts-last)/1000, 0.05); last = ts;
+  update(dt); draw();
   requestAnimationFrame(loop);
 }
 
 function update(dt) {
-  dayTime = (dayTime + dt * 0.008) % 1; // full cycle ~125s
-
-  // Next station
-  while (nextStationIdx < stations.length - 1 && stations[nextStationIdx].served) nextStationIdx++;
+  while (nextStationIdx < stations.length-1 && stations[nextStationIdx].served) nextStationIdx++;
   const ns = stations[nextStationIdx];
   const dist = ns.x - tramX;
+  const brakeDist = (speed*speed)/(2*brake)+35;
+  autobrake = dist < brakeDist+20 && dist > -10 && !stoppedAt;
 
-  // Auto-approach: brake when close
-  const brakeDist = (speed * speed) / (2 * brake) + 30;
-  autobrake = (dist < brakeDist + 20 && dist > -10 && !stoppedAt);
-
-  // Stop at station
   if (dist <= 0 && !stoppedAt && speed < 5) {
-    speed = 0;
-    stoppedAt = ns;
-    doorsOpen = false;
-    doorTimer = 0.6; // brief pause before doors open
-    boardingTimer = 2.5;
+    speed = 0; stoppedAt = ns; doorsOpen = false; doorTimer = 0.5; boardingTimer = 2.8;
   }
-
-  // Doors & boarding
   if (stoppedAt) {
     doorTimer -= dt;
     if (doorTimer <= 0 && !doorsOpen) doorsOpen = true;
     if (doorsOpen) {
       boardingTimer -= dt;
       if (boardingTimer <= 0) {
-        // board passengers
-        const boarding = Math.min(stoppedAt.waiting, 8 - pax);
-        pax += boarding;
-        // some alight
-        const alighting = Math.min(Math.floor(Math.random() * 3) + 1, pax);
-        pax = Math.max(0, pax - alighting);
-        stoppedAt.waiting = 0;
-        stoppedAt.served = true;
-        stoppedAt = null;
-        doorsOpen = false;
+        pax = Math.max(0, pax - Math.floor(Math.random()*3+1));
+        pax = Math.min(8, pax + Math.min(stoppedAt.waiting, 8-pax));
+        stoppedAt.waiting = 0; stoppedAt.served = true;
+        stoppedAt = null; doorsOpen = false;
       }
     }
   }
-
-  // Speed control
   if (!stoppedAt) {
-    if ((keys['ArrowRight'] || keys['KeyD']) && !autobrake) {
-      speed = Math.min(maxSpeed, speed + accel * dt);
-    } else if (keys['ArrowLeft'] || keys['KeyA']) {
-      speed = Math.max(0, speed - brake * dt);
-    } else if (autobrake) {
-      speed = Math.max(0, speed - brake * dt);
-    } else {
-      // Gentle coast
-      speed = Math.min(maxSpeed * 0.55, speed + accel * 0.3 * dt);
-    }
+    if ((keys['ArrowRight']||keys['KeyD']) && !autobrake) speed = Math.min(maxSpeed, speed+accel*dt);
+    else if (keys['ArrowLeft']||keys['KeyA']) speed = Math.max(0, speed-brake*dt);
+    else if (autobrake) speed = Math.max(0, speed-brake*dt);
+    else speed = Math.min(maxSpeed*0.5, speed+accel*0.25*dt);
   }
+  tramX += speed*dt;
+  worldX = tramX - canvas.width*0.34;
 
-  tramX += speed * dt;
-  worldX = tramX - canvas.width * 0.35;
-
-  // Update birds
   for (const b of birds) {
-    b.wx += b.speed * dt;
-    b.flap += dt * 4;
-    if (b.wx - worldX * 0.1 > canvas.width + 100) b.wx -= 12000;
+    b.wx += b.spd*dt; b.flap += dt*3.5;
+    if (b.wx - worldX*0.1 > canvas.width+200) b.wx -= 14000;
   }
 
-  // Update HUD
-  const kmh = Math.round(speed * 3.6 / 10) * 10;
-  document.getElementById('h-speed').textContent = kmh + ' km/h';
-  document.getElementById('h-station').textContent = '→ ' + ns.name + (dist < 200 ? ' ●' : '');
-  document.getElementById('h-pax').textContent = pax + ' Fahrgäste';
+  const kmh = Math.round(speed*3.6/10)*10;
+  document.getElementById('h-speed').textContent = kmh+' km/h';
+  document.getElementById('h-station').textContent = '→ '+ns.name+(dist<200?' ·':'');
+  document.getElementById('h-pax').textContent = pax+' Fahrgäste';
 }
 
 function draw() {
-  const W = canvas.width, H = canvas.height;
-  const GY = GROUND_Y();
-  ctx.clearRect(0, 0, W, H);
+  const W = canvas.width, H = canvas.height, GY = GROUND_Y();
 
-  // Sky
-  const dayAmt = Math.sin(dayTime * Math.PI); // 0=night, 1=day
-  const skyTop = lerpColor([20,18,35], [185,210,235], dayAmt);
-  const skyBot = lerpColor([40,35,55], [220,230,210], dayAmt);
+  // Paper base
+  ctx.drawImage(paperCanvas, 0, 0);
+
+  // Sky — very faint gray wash, just slightly lighter than paper at top
+  ctx.save();
+  ctx.globalAlpha = 0.18;
   const skyGrad = ctx.createLinearGradient(0, 0, 0, GY);
-  skyGrad.addColorStop(0, rgbStr(skyTop));
-  skyGrad.addColorStop(1, rgbStr(skyBot));
+  skyGrad.addColorStop(0, '#d0ccc0');
+  skyGrad.addColorStop(1, '#e8e4d8');
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, W, GY);
-
-  // Paper texture overlay
-  ctx.save();
-  ctx.globalAlpha = 0.04;
-  for (let i = 0; i < W; i += 3) {
-    for (let j = 0; j < H; j += 3) {
-      if (Math.random() > 0.5) {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(i, j, 1, 1);
-      }
-    }
-  }
   ctx.restore();
 
-  // Sun/Moon
-  const sunX = ((dayTime * 1.4 - 0.2) % 1) * W;
-  const sunY = GY * 0.25 + Math.sin(dayTime * Math.PI) * (-GY * 0.15);
-  if (dayAmt > 0.1) {
-    ctx.save();
-    ctx.globalAlpha = dayAmt * 0.6;
-    ctx.strokeStyle = '#c8b060';
-    ctx.lineWidth = 1;
-    ctx.fillStyle = '#ede080';
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, 18, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-  } else {
-    ctx.save();
-    ctx.globalAlpha = 0.7;
-    ctx.fillStyle = '#e0ddd0';
-    ctx.beginPath();
-    ctx.arc(W * 0.7, GY * 0.2, 14, 0, Math.PI * 2);
-    ctx.fill();
+  // Far hills — very faint, light hatching
+  for (const o of bgElems) {
+    if (o.layer !== 1) continue;
+    const sx = o.wx - worldX * 0.06;
+    if (sx < -500 || sx > W+500) continue;
+    drawHill(sx, GY - 20, o.w, o.h, 0.10);
+  }
+
+  // Mid layer
+  for (const o of bgElems) {
+    if (o.layer !== 2) continue;
+    const sx = o.wx - worldX * 0.28;
+    if (sx < -200 || sx > W+200) continue;
+    const groundBase = GY - 10;
+    ctx.save(); ctx.globalAlpha = 0.55;
+    if (o.type==='tree')  drawTree(sx, groundBase, o.h, 0.28);
+    if (o.type==='pine')  drawPine(sx, groundBase, o.h, 0.28);
+    if (o.type==='house') drawHouse(sx, groundBase, o.w, o.h);
     ctx.restore();
   }
 
-  // Stars
-  if (dayAmt < 0.5) {
-    ctx.save();
-    ctx.globalAlpha = (0.5 - dayAmt) * 1.5;
-    ctx.fillStyle = '#fff';
-    for (let i = 0; i < 60; i++) {
-      const sx2 = ((i * 137.5) % 1) * W;
-      const sy = ((i * 97.3) % 0.6) * GY;
-      ctx.fillRect(sx2, sy, 1.2, 1.2);
-    }
+  // Near layer
+  for (const o of bgElems) {
+    if (o.layer !== 3) continue;
+    const sx = o.wx - worldX * 0.72;
+    if (sx < -100 || sx > W+100) continue;
+    ctx.save(); ctx.globalAlpha = 0.8;
+    if (o.type==='tree') drawTree(sx, GY+2, o.h, 0.72);
+    if (o.type==='pine') drawPine(sx, GY+2, o.h, 0.72);
     ctx.restore();
   }
-
-  ctx.strokeStyle = '#3a3028';
-
-  // Layer 1: far hills
-  drawLayer(bgObjects.filter(o=>o.layer===1), 0.08, GY, dayAmt);
-  // Layer 2: mid trees/houses
-  drawLayer(bgObjects.filter(o=>o.layer===2), 0.35, GY, dayAmt);
-  // Layer 3: near trees
-  drawLayer(bgObjects.filter(o=>o.layer===3), 0.75, GY, dayAmt);
 
   // Birds
   for (const b of birds) {
-    const bsx = b.wx - worldX * 0.12;
-    if (bsx < -20 || bsx > W + 20) continue;
-    drawBird(bsx, b.wy, b.flap, dayAmt);
-  }
-
-  // Ground
-  const groundGrad = ctx.createLinearGradient(0, GY, 0, H);
-  const gc1 = lerpColor([60,55,45], [140,130,110], dayAmt);
-  const gc2 = lerpColor([30,28,22], [100,95,80], dayAmt);
-  groundGrad.addColorStop(0, rgbStr(gc1));
-  groundGrad.addColorStop(1, rgbStr(gc2));
-  ctx.fillStyle = groundGrad;
-  ctx.fillRect(0, GY, W, H - GY);
-
-  // Track
-  drawTrack(GY, dayAmt);
-
-  // Overhead wire & poles
-  drawOverhead(GY, dayAmt);
-
-  // Stations
-  const visStations = stations.filter(s => {
-    const sx2 = s.x - worldX;
-    return sx2 > -200 && sx2 < W + 200;
-  });
-  for (const s of visStations) drawStation(s, GY, dayAmt);
-
-  // Tram
-  const tramScreenX = tramX - worldX;
-  drawTram(tramScreenX, GY, dayAmt);
-
-  // Vignette
-  const vig = ctx.createRadialGradient(W/2, H/2, H*0.2, W/2, H/2, H*0.8);
-  vig.addColorStop(0, 'rgba(0,0,0,0)');
-  vig.addColorStop(1, 'rgba(0,0,0,0.35)');
-  ctx.fillStyle = vig;
-  ctx.fillRect(0, 0, W, H);
-}
-
-function drawLayer(objs, parallax, GY, dayAmt) {
-  for (const o of objs) {
-    const sx = o.wx - worldX * parallax;
-    if (sx < -300 || sx > canvas.width + 300) continue;
-    const alpha = 0.25 + dayAmt * 0.5;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = '#3a3028';
-    ctx.fillStyle = 'rgba(60,55,45,0.15)';
-    if (o.type === 'tree') drawTree(sx, GY - (1-parallax)*80, o.h, parallax);
-    else if (o.type === 'pinetree') drawPineTree(sx, GY - (1-parallax)*80, o.h, parallax);
-    else if (o.type === 'house') drawHouse(sx, GY - (1-parallax)*60, o.w, o.h, parallax);
-    else if (o.type === 'hill') drawHill(sx, GY - (1-parallax)*60, o.w, o.h, parallax);
+    const bsx = b.wx - worldX*0.1;
+    if (bsx < -30 || bsx > W+30) continue;
+    ctx.save(); ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = INK; ctx.lineWidth = 0.8; ctx.lineCap='round';
+    const flap = Math.sin(b.flap)*5;
+    ctx.beginPath();
+    ctx.moveTo(bsx-9, b.wy+flap);
+    ctx.quadraticCurveTo(bsx-4, b.wy, bsx, b.wy+2);
+    ctx.quadraticCurveTo(bsx+4, b.wy, bsx+9, b.wy+flap);
+    ctx.stroke();
     ctx.restore();
   }
-}
 
-function drawTree(x, groundY, h, scale) {
-  const w = h * 0.7;
-  ctx.lineWidth = scale < 0.5 ? 0.6 : 1;
-  // trunk
-  sketchLine(x, groundY, x, groundY - h * 0.4, 0.8, scale < 0.5 ? 0.5 : 1);
-  // canopy
-  ctx.beginPath();
-  ctx.ellipse(x, groundY - h * 0.65, w * 0.5, h * 0.45, 0, 0, Math.PI * 2);
-  ctx.stroke();
-  // inner detail
-  for (let i = 0; i < 3; i++) {
-    sketchLine(x + rnd(w*0.3), groundY - h*0.4 - i*h*0.1,
-               x + rnd(w*0.4), groundY - h*0.7 - i*h*0.05, 0.4, 0.5);
-  }
-}
-
-function drawPineTree(x, groundY, h, scale) {
-  ctx.lineWidth = scale < 0.5 ? 0.6 : 1;
-  sketchLine(x, groundY, x, groundY - h, 0.8, scale < 0.5 ? 0.5 : 1);
-  const layers = 4;
-  for (let i = 0; i < layers; i++) {
-    const ly = groundY - h * (0.15 + i * 0.22);
-    const lw = h * 0.35 * (1 - i * 0.18);
-    sketchLine(x - lw, ly + h*0.05, x, ly - h*0.12, 0.7, 0.7);
-    sketchLine(x + lw, ly + h*0.05, x, ly - h*0.12, 0.7, 0.7);
-  }
-}
-
-function drawHouse(x, groundY, w, h, scale) {
-  ctx.lineWidth = scale < 0.5 ? 0.6 : 1;
-  // body
-  ctx.strokeRect(x - w/2 + rnd(1), groundY - h + rnd(1), w + rnd(1), h + rnd(1));
-  // roof
-  ctx.beginPath();
-  ctx.moveTo(x - w/2 - 4 + rnd(1), groundY - h + rnd(1));
-  ctx.lineTo(x + rnd(1), groundY - h - h*0.5 + rnd(2));
-  ctx.lineTo(x + w/2 + 4 + rnd(1), groundY - h + rnd(1));
-  ctx.stroke();
-  // window
-  if (scale > 0.3) {
-    ctx.strokeRect(x - 6 + rnd(1), groundY - h * 0.55 + rnd(1), 12, 10);
-  }
-}
-
-function drawHill(x, groundY, w, h, scale) {
-  ctx.lineWidth = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(x - w/2, groundY);
-  ctx.quadraticCurveTo(x + rnd(20), groundY - h + rnd(10), x + w/2, groundY);
-  ctx.stroke();
-}
-
-function drawBird(x, y, flap, dayAmt) {
+  // Ground — hatched / textured
   ctx.save();
-  ctx.globalAlpha = 0.3 + dayAmt * 0.3;
-  ctx.strokeStyle = '#2a2018';
-  ctx.lineWidth = 0.8;
-  const wing = Math.sin(flap) * 4;
-  ctx.beginPath();
-  ctx.moveTo(x - 8, y + wing);
-  ctx.quadraticCurveTo(x - 4, y, x, y + 2);
-  ctx.quadraticCurveTo(x + 4, y, x + 8, y + wing);
-  ctx.stroke();
+  ctx.globalAlpha = 0.06;
+  const gGrad = ctx.createLinearGradient(0, GY, 0, H);
+  gGrad.addColorStop(0, '#888');
+  gGrad.addColorStop(1, '#555');
+  ctx.fillStyle = gGrad;
+  ctx.fillRect(0, GY, W, H-GY);
   ctx.restore();
-}
+  hatch(0, GY, W, H-GY, 0.055, 8, 30);
+  // Ground horizon line — strong pencil stroke
+  pline(0, GY, W, GY, 0.55, 1.5, 8);
 
-function drawTrack(GY, dayAmt) {
-  const W = canvas.width;
-  const railY = GY + 4;
-  const gauge = 14;
-  const alpha = 0.4 + dayAmt * 0.3;
-
-  ctx.save();
-  ctx.strokeStyle = '#4a4035';
-  ctx.lineWidth = 1.5;
-  ctx.globalAlpha = alpha;
-
-  // Rails
-  sketchLine(-10, railY - gauge/2, W + 10, railY - gauge/2, alpha, 1.5);
-  sketchLine(-10, railY + gauge/2, W + 10, railY + gauge/2, alpha, 1.5);
-
-  // Sleepers
-  const sleeperSpacing = 22;
-  const offsetX = worldX % sleeperSpacing;
-  for (let sx = -offsetX; sx < W + sleeperSpacing; sx += sleeperSpacing) {
-    sketchLine(sx + rnd(0.5), railY - gauge, sx + rnd(0.5), railY + gauge, alpha * 0.7, 2.5);
-  }
-  ctx.restore();
-}
-
-function drawOverhead(GY, dayAmt) {
-  const W = canvas.width;
-  const wireY = GY - 90;
-  const poleSpacing = 180;
-  const alpha = 0.3 + dayAmt * 0.2;
-
-  // Wire
-  ctx.save();
-  ctx.strokeStyle = '#5a5045';
-  ctx.lineWidth = 0.8;
-  ctx.globalAlpha = alpha;
-  ctx.beginPath();
-  const offsetX = worldX % poleSpacing;
-  for (let px = -offsetX; px < W + poleSpacing; px += poleSpacing) {
-    const catY = wireY + 6; // slight sag
-    ctx.moveTo(px + rnd(0.5), wireY);
-    ctx.quadraticCurveTo(px + poleSpacing/2, catY, px + poleSpacing + rnd(0.5), wireY);
-  }
-  ctx.stroke();
-
-  // Poles
-  for (let px = -offsetX; px < W + poleSpacing; px += poleSpacing) {
-    const poleX = px + rnd(0.5);
-    sketchLine(poleX, GY + 4, poleX, wireY, alpha, 1.2);
-    // arm
-    sketchLine(poleX, wireY, poleX - 18, wireY - 8, alpha * 0.8, 0.8);
-    sketchLine(poleX - 18, wireY - 8, poleX - 18, wireY, alpha * 0.6, 0.7);
-  }
-  ctx.restore();
-}
-
-function drawStation(station, GY, dayAmt) {
-  const sx = station.x - worldX;
-  const alpha = 0.5 + dayAmt * 0.3;
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = '#3a3028';
-
-  // Platform
-  ctx.lineWidth = 1.5;
-  const pw = 90, ph = 8;
-  ctx.fillStyle = 'rgba(90,80,65,0.2)';
-  ctx.fillRect(sx - pw/2, GY - ph, pw, ph);
-  ctx.strokeRect(sx - pw/2 + rnd(0.5), GY - ph + rnd(0.5), pw, ph);
-
-  // Shelter
-  ctx.lineWidth = 1;
-  const sw = 50, sh = 35;
-  const roofY = GY - ph - sh;
-  sketchLine(sx - sw/2, GY - ph, sx - sw/2, roofY, alpha, 1);
-  sketchLine(sx + sw/2, GY - ph, sx + sw/2, roofY, alpha, 1);
-  sketchLine(sx - sw/2 - 5, roofY, sx + sw/2 + 5, roofY, alpha, 1.5);
-  // roof slope
-  sketchLine(sx - sw/2 - 5, roofY, sx - sw/2 - 12, roofY - 8, alpha * 0.7, 1);
-  sketchLine(sx + sw/2 + 5, roofY, sx + sw/2 + 12, roofY - 8, alpha * 0.7, 1);
-
-  // Sign
-  ctx.font = `${Math.max(8, 9 * (canvas.width / 1400))}px Georgia`;
-  ctx.fillStyle = '#3a3028';
-  ctx.globalAlpha = alpha;
-  ctx.textAlign = 'center';
-  ctx.fillText(station.name, sx, roofY - 12);
-
-  // Waiting passengers
-  for (let i = 0; i < station.waiting; i++) {
-    const px = sx - 35 + i * 11 + rnd(2);
-    const py = GY - ph;
-    drawPerson(px, py, false, dayAmt);
-  }
-
-  ctx.restore();
-}
-
-function drawPerson(x, y, boarded, dayAmt) {
-  const h = boarded ? 14 : 18;
-  const alpha = boarded ? 0.6 : (0.4 + dayAmt * 0.4);
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = '#2a2018';
-  ctx.lineWidth = 0.9;
-  // head
-  ctx.beginPath();
-  ctx.arc(x + rnd(0.5), y - h + rnd(0.5), 3, 0, Math.PI * 2);
-  ctx.stroke();
-  // body
-  sketchLine(x, y - h + 3, x, y - h * 0.35, alpha, 0.9);
-  // arms
-  sketchLine(x - 4, y - h * 0.55, x + 4, y - h * 0.55, alpha, 0.8);
-  // legs
-  sketchLine(x, y - h * 0.35, x - 3, y, alpha, 0.9);
-  sketchLine(x, y - h * 0.35, x + 3, y, alpha, 0.9);
-  ctx.restore();
-}
-
-function drawTram(x, GY, dayAmt) {
-  const W2 = 130, H2 = 52;
-  const ty = GY - H2 + 4;
-  const alpha = 0.75 + dayAmt * 0.15;
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = '#2a2018';
-
-  // Shadow
-  ctx.save();
-  ctx.globalAlpha = 0.08;
-  ctx.fillStyle = '#000';
-  ctx.beginPath();
-  ctx.ellipse(x, GY + 5, W2 * 0.55, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // Body fill
-  ctx.fillStyle = doorsOpen ? 'rgba(200,190,170,0.35)' : 'rgba(210,200,180,0.25)';
-  ctx.fillRect(x - W2/2 + rnd(0.3), ty + rnd(0.3), W2 + rnd(0.3), H2 + rnd(0.3));
-  ctx.lineWidth = 1.8;
-  ctx.strokeRect(x - W2/2 + rnd(0.5), ty + rnd(0.5), W2, H2);
-
-  // Windows (6)
-  const winW = 16, winH = 18, winY = ty + 8;
-  for (let i = 0; i < 6; i++) {
-    const wx = x - W2/2 + 12 + i * (W2 - 20) / 5;
-    ctx.lineWidth = 0.9;
-    ctx.fillStyle = 'rgba(180,210,220,0.15)';
-    ctx.fillRect(wx - winW/2 + rnd(0.3), winY + rnd(0.3), winW, winH);
-    ctx.strokeRect(wx - winW/2 + rnd(0.5), winY + rnd(0.5), winW, winH);
-    // arch top
-    ctx.beginPath();
-    ctx.arc(wx + rnd(0.3), winY + rnd(0.3), winW/2, Math.PI, 0);
-    ctx.stroke();
-
-    // Passenger silhouettes
-    if (i > 0 && i < 5 && i <= pax) {
-      drawPerson(wx, winY + winH - 2, true, dayAmt);
+  // Grass tufts along ground
+  const tSpacing = 40;
+  const tOffset = worldX % tSpacing;
+  for (let tx = -tOffset; tx < W + tSpacing; tx += tSpacing) {
+    const gx = tx + rnd(4);
+    for (let blade = 0; blade < 3; blade++) {
+      const bx = gx + rnd(6);
+      pline(bx, GY, bx + rnd(4)-1, GY - 5 - Math.random()*5, 0.2, 0.5, 2);
     }
   }
 
-  // Door (front-ish)
-  const doorX = x - W2/2 + 28;
-  ctx.lineWidth = 1;
-  if (doorsOpen) {
-    sketchLine(doorX, ty + H2 * 0.2, doorX - 8, ty + H2 * 0.2, alpha, 1);
-    sketchLine(doorX + 14, ty + H2 * 0.2, doorX + 22, ty + H2 * 0.2, alpha, 1);
-  } else {
-    ctx.strokeRect(doorX + rnd(0.5), ty + H2*0.2 + rnd(0.5), 14, H2 * 0.75);
-    sketchLine(doorX + 7, ty + H2 * 0.2, doorX + 7, ty + H2 * 0.95, alpha * 0.5, 0.7);
+  // Track
+  drawTrack(GY);
+
+  // Overhead wire + poles
+  drawOverhead(GY);
+
+  // Stations
+  for (const s of stations) {
+    const sx = s.x - worldX;
+    if (sx < -200 || sx > W+200) continue;
+    drawStation(s, GY);
   }
 
-  // Bumpers
-  ctx.lineWidth = 2;
-  sketchLine(x - W2/2, ty + H2 * 0.6, x - W2/2 - 8, ty + H2 * 0.7, alpha, 2);
-  sketchLine(x + W2/2, ty + H2 * 0.6, x + W2/2 + 8, ty + H2 * 0.7, alpha, 2);
+  // Tram
+  drawTram(tramX - worldX, GY);
 
-  // Roof detail / stripe
-  ctx.lineWidth = 0.8;
-  sketchLine(x - W2/2 + 2, ty + 5, x + W2/2 - 2, ty + 5, alpha * 0.5, 0.7);
-
-  // Pantograph
-  const pantX = x + 20;
-  const pantBaseY = ty;
-  const pantTopY = pantBaseY - 28;
-  const wireContactY = GY - 90;
-  ctx.lineWidth = 1;
-  sketchLine(pantX - 15, pantBaseY, pantX - 5, pantTopY + 8, alpha * 0.8, 1);
-  sketchLine(pantX + 15, pantBaseY, pantX + 5, pantTopY + 8, alpha * 0.8, 1);
-  sketchLine(pantX - 5, pantTopY + 8, pantX + 5, pantTopY + 8, alpha * 0.9, 1.2);
-  // contact wire arm
-  sketchLine(pantX, pantTopY + 8, pantX, wireContactY + 2, alpha * 0.5, 0.6);
-
-  // Wheels
-  const wheels = [x - W2/2 + 18, x - W2/2 + 50, x + W2/2 - 18, x + W2/2 - 50];
-  for (const wx of wheels) {
-    ctx.beginPath();
-    ctx.arc(wx + rnd(0.5), GY + 2, 8, 0, Math.PI * 2);
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    // spoke
-    sketchLine(wx - 5, GY, wx + 5, GY + 4, alpha * 0.4, 0.6);
-    sketchLine(wx, GY - 5, wx, GY + 7, alpha * 0.4, 0.6);
-  }
-
-  // Destination sign
-  ctx.font = '7px Georgia';
-  ctx.fillStyle = '#2a2018';
-  ctx.globalAlpha = alpha * 0.8;
-  ctx.textAlign = 'center';
-  const ns = stations[nextStationIdx];
-  ctx.fillText(ns ? ns.name.substring(0,10) : '—', x - W2/2 + 28, ty + 4);
-
+  // Vignette — soft pencil smudge at edges
+  ctx.save();
+  const vig = ctx.createRadialGradient(W/2, H/2, H*0.28, W/2, H/2, H*0.82);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(30,25,18,0.28)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
   ctx.restore();
 }
 
-// --- Color utilities ---
-function lerpColor(a, b, t) {
-  return [
-    a[0] + (b[0]-a[0]) * t,
-    a[1] + (b[1]-a[1]) * t,
-    a[2] + (b[2]-a[2]) * t
-  ];
+function drawHill(x, groundY, w, h, alpha) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.strokeStyle = INK_FAINT; ctx.lineWidth = 0.8; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x - w/2 + rnd(3), groundY + rnd(2));
+  ctx.bezierCurveTo(
+    x - w*0.2 + rnd(10), groundY - h*0.6 + rnd(8),
+    x + w*0.2 + rnd(10), groundY - h + rnd(10),
+    x + w/2 + rnd(3), groundY + rnd(2)
+  );
+  ctx.stroke();
+  // faint interior hatch
+  hatch(x - w/2, groundY - h, w, h, 0.04, 14, 25);
+  ctx.restore();
 }
-function rgbStr([r,g,b]) {
-  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+
+function drawTree(x, groundY, h, par) {
+  const lw = par > 0.5 ? 1 : 0.6;
+  const trunkH = h * 0.38;
+  // trunk — double line
+  pline(x-2, groundY, x-1, groundY-trunkH, 0.7, lw);
+  pline(x+2, groundY, x+1, groundY-trunkH, 0.65, lw*0.8);
+  // canopy outline — wobbly ellipse
+  ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth = lw;
+  const cy = groundY - trunkH - h*0.32;
+  const rx = h*0.32, ry = h*0.34;
+  // draw as poly of short lines
+  ctx.beginPath();
+  const steps = 18;
+  for (let i = 0; i <= steps; i++) {
+    const a = (i/steps)*Math.PI*2;
+    const px2 = x + Math.cos(a)*rx + rnd(1.8);
+    const py = cy + Math.sin(a)*ry + rnd(1.8);
+    i===0 ? ctx.moveTo(px2,py) : ctx.lineTo(px2,py);
+  }
+  ctx.globalAlpha = 0.65; ctx.stroke();
+  // inner scribble
+  for (let s=0; s<5; s++) {
+    ctx.globalAlpha = 0.12;
+    ctx.beginPath();
+    ctx.moveTo(x+rnd(rx*0.8), cy+rnd(ry*0.8));
+    ctx.lineTo(x+rnd(rx*0.8), cy+rnd(ry*0.8));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPine(x, groundY, h, par) {
+  const lw = par > 0.5 ? 1 : 0.6;
+  pline(x, groundY, x, groundY-h, 0.7, lw);
+  const layers = 5;
+  for (let i = 0; i < layers; i++) {
+    const t = i/layers;
+    const ly = groundY - h*(0.12 + t*0.82);
+    const lw2 = h*(0.28 - t*0.18);
+    pline(x-lw2+rnd(1), ly+h*0.04+rnd(1), x+rnd(2), ly-h*0.10+rnd(2), 0.6, lw, 2);
+    pline(x+lw2+rnd(1), ly+h*0.04+rnd(1), x+rnd(2), ly-h*0.10+rnd(2), 0.6, lw, 2);
+  }
+}
+
+function drawHouse(x, groundY, w, h) {
+  // wall — hatched fill first
+  hatch(x-w/2, groundY-h, w, h, 0.07, 7, 90);
+  pRect(x-w/2, groundY-h, w, h, 0.65, 1);
+  // roof
+  ctx.save(); ctx.strokeStyle = INK; ctx.lineWidth=1.2; ctx.globalAlpha=0.65; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(x-w/2-5+rnd(1), groundY-h+rnd(1));
+  ctx.lineTo(x+rnd(2), groundY-h-h*0.55+rnd(3));
+  ctx.lineTo(x+w/2+5+rnd(1), groundY-h+rnd(1));
+  ctx.stroke();
+  // roof hatch
+  hatch(x-w/2-5, groundY-h-h*0.55, w+10, h*0.55, 0.08, 5, 135);
+  ctx.restore();
+  // windows
+  const winCount = Math.floor(w/25);
+  for (let i=0; i<winCount; i++) {
+    const wx2 = x - w/2 + 12 + i*(w-16)/(Math.max(winCount-1,1));
+    pRect(wx2-6+rnd(0.5), groundY-h*0.62+rnd(0.5), 12, 10, 0.55, 0.8);
+    // cross
+    pline(wx2, groundY-h*0.62, wx2, groundY-h*0.62+10, 0.3, 0.5);
+    pline(wx2-6, groundY-h*0.62+5, wx2+6, groundY-h*0.62+5, 0.3, 0.5);
+  }
+  // door
+  pRect(x-5+rnd(0.5), groundY-h*0.4+rnd(0.5), 10, h*0.4, 0.5, 0.8);
+}
+
+function drawTrack(GY) {
+  const W = canvas.width;
+  const railY = GY + 3;
+  const gauge = 13;
+
+  // Sleepers first
+  const sleeperSpacing = 20;
+  const off = worldX % sleeperSpacing;
+  for (let tx = -off; tx < W + sleeperSpacing; tx += sleeperSpacing) {
+    pline(tx+rnd(0.4), railY-gauge-1, tx+rnd(0.4), railY+gauge+1, 0.35, 2.5, 1);
+  }
+  // Rails
+  pline(-5, railY-gauge/2, W+5, railY-gauge/2, 0.7, 1.4, 12);
+  pline(-5, railY+gauge/2, W+5, railY+gauge/2, 0.7, 1.4, 12);
+}
+
+function drawOverhead(GY) {
+  const W = canvas.width;
+  const wireY = GY - 88;
+  const poleSpacing = 175;
+  const off = worldX % poleSpacing;
+
+  // Poles
+  for (let px = -off; px < W+poleSpacing; px += poleSpacing) {
+    pline(px+rnd(0.5), GY+3, px+rnd(0.5), wireY+2, 0.45, 1.2);
+    // cross arm
+    pline(px, wireY+2, px-20, wireY-6, 0.38, 0.9);
+    pline(px-20, wireY-6, px-20, wireY+4, 0.3, 0.7);
+    // brace
+    pline(px-20, wireY-6, px-8, wireY-12, 0.25, 0.6);
+  }
+
+  // Catenary wire
+  ctx.save(); ctx.strokeStyle = INK_LIGHT; ctx.lineWidth = 0.7;
+  ctx.globalAlpha = 0.38; ctx.lineCap='round';
+  ctx.beginPath();
+  for (let px = -off; px < W+poleSpacing; px += poleSpacing) {
+    ctx.moveTo(px+rnd(0.5), wireY+rnd(0.5));
+    ctx.quadraticCurveTo(px+poleSpacing/2+rnd(3), wireY+8+rnd(1),
+                         px+poleSpacing+rnd(0.5), wireY+rnd(0.5));
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawStation(station, GY) {
+  const sx = station.x - worldX;
+  const ph = 7, pw = 95;
+
+  // Platform — hatched stone look
+  hatch(sx-pw/2, GY-ph, pw, ph, 0.1, 4, 0);
+  pRect(sx-pw/2, GY-ph, pw, ph, 0.6, 1.2);
+
+  // Shelter frame
+  const sh = 38, sw = 52;
+  const roofY = GY - ph - sh;
+  pline(sx-sw/2, GY-ph, sx-sw/2, roofY, 0.58, 1);
+  pline(sx+sw/2, GY-ph, sx+sw/2, roofY, 0.58, 1);
+  // Roof beam
+  pline(sx-sw/2-6, roofY, sx+sw/2+6, roofY, 0.62, 1.5);
+  // Roof slope
+  pline(sx-sw/2-6, roofY, sx-sw/2-14, roofY-9, 0.5, 1);
+  pline(sx+sw/2+6, roofY, sx+sw/2+14, roofY-9, 0.5, 1);
+  pline(sx-sw/2-14, roofY-9, sx+sw/2+14, roofY-9, 0.4, 0.8);
+  // Roof hatch
+  hatch(sx-sw/2-14, roofY-9, sw+28, 9, 0.08, 4, 135);
+  // Back wall faint
+  pRect(sx-sw/2, roofY, sw, sh*0.6, 0.15, 0.6);
+
+  // Name sign
+  ctx.save();
+  ctx.font = `italic ${Math.max(8,9)}px Georgia`;
+  ctx.fillStyle = INK;
+  ctx.globalAlpha = 0.65;
+  ctx.textAlign = 'center';
+  ctx.fillText(station.name, sx, roofY-14);
+  ctx.restore();
+
+  // Waiting people
+  for (let i=0; i<station.waiting; i++) {
+    drawPerson(sx - 38 + i*11 + rnd(2), GY-ph, false);
+  }
+}
+
+function drawPerson(x, y, onboard) {
+  const h = onboard ? 15 : 20;
+  const alpha = onboard ? 0.55 : 0.62;
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.strokeStyle = INK; ctx.lineCap='round';
+  // head
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.arc(x+rnd(0.5), y-h+rnd(0.5), 3, 0, Math.PI*2);
+  ctx.stroke();
+  // body
+  pline(x, y-h+3.5, x+rnd(1), y-h*0.38, alpha, 0.9, 2);
+  // arms
+  pline(x-4, y-h*0.58, x+4, y-h*0.58+rnd(1), alpha, 0.8, 1);
+  // legs
+  pline(x, y-h*0.38, x-3+rnd(1), y, alpha, 0.9, 2);
+  pline(x, y-h*0.38, x+3+rnd(1), y, alpha, 0.9, 2);
+  ctx.restore();
+}
+
+function drawTram(x, GY) {
+  const TW = 132, TH = 54;
+  const ty = GY - TH + 3;
+
+  ctx.save();
+
+  // Shadow — soft hatch under tram
+  hatch(x-TW/2+5, GY+2, TW-10, 6, 0.07, 4, 0);
+
+  // Body — paper fill with hatch shading
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  ctx.fillStyle = '#ccc';
+  ctx.fillRect(x-TW/2, ty, TW, TH);
+  ctx.restore();
+  hatch(x-TW/2, ty, TW, TH, 0.04, 9, 90);
+  // Shadow side (right side darker)
+  hatch(x+TW/2-20, ty, 20, TH, 0.06, 5, 90);
+
+  // Outline
+  pRect(x-TW/2, ty, TW, TH, 0.82, 1.8);
+
+  // Roof line
+  pline(x-TW/2+3, ty+6, x+TW/2-3, ty+6, 0.35, 0.7, 6);
+
+  // Side stripe
+  pline(x-TW/2, ty+TH*0.55, x+TW/2, ty+TH*0.55, 0.25, 0.6, 8);
+
+  // Windows — 6
+  const winW=15, winH=19;
+  const winY = ty+8;
+  const winStep = (TW-24)/5;
+  for (let i=0; i<6; i++) {
+    const wx2 = x - TW/2 + 12 + i*winStep;
+    // window fill — very faint
+    ctx.save(); ctx.globalAlpha=0.08; ctx.fillStyle='#aaccdd';
+    ctx.fillRect(wx2-winW/2, winY, winW, winH); ctx.restore();
+    // arch
+    ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=0.9; ctx.globalAlpha=0.75; ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(wx2-winW/2+rnd(0.5), winY+winH+rnd(0.5));
+    ctx.lineTo(wx2-winW/2+rnd(0.5), winY+5+rnd(0.5));
+    ctx.arc(wx2+rnd(0.4), winY+5, winW/2, Math.PI, 0);
+    ctx.lineTo(wx2+winW/2+rnd(0.5), winY+winH+rnd(0.5));
+    ctx.stroke();
+    ctx.restore();
+    // horizontal sill
+    pline(wx2-winW/2-1, winY+winH, wx2+winW/2+1, winY+winH, 0.45, 0.8);
+    // passenger
+    if (i>0 && i<5 && i<=pax) drawPerson(wx2, winY+winH-1, true);
+  }
+
+  // Door
+  const doorX = x - TW/2 + 26;
+  if (doorsOpen) {
+    // open door — gap
+    pline(doorX, ty+TH*0.22, doorX-9, ty+TH*0.22, 0.6, 1);
+    pline(doorX+13, ty+TH*0.22, doorX+22, ty+TH*0.22, 0.6, 1);
+    pline(doorX, ty+TH*0.22, doorX, ty+TH, 0.25, 0.6);
+  } else {
+    pRect(doorX, ty+TH*0.22, 13, TH*0.78, 0.65, 0.9);
+    pline(doorX+6.5, ty+TH*0.22, doorX+6.5, ty+TH, 0.3, 0.6);
+  }
+
+  // Bumpers
+  pline(x-TW/2, ty+TH*0.58, x-TW/2-10, ty+TH*0.70, 0.7, 2);
+  pline(x+TW/2, ty+TH*0.58, x+TW/2+10, ty+TH*0.70, 0.7, 2);
+  pline(x-TW/2-10, ty+TH*0.65, x-TW/2-10, ty+TH*0.78, 0.5, 1.5);
+  pline(x+TW/2+10, ty+TH*0.65, x+TW/2+10, ty+TH*0.78, 0.5, 1.5);
+
+  // Pantograph
+  const pantX = x+22;
+  const ptBaseY = ty, ptMidY = ty-22;
+  const wireY2 = GY-88;
+  pline(pantX-14, ptBaseY, pantX-4, ptMidY+6, 0.65, 1);
+  pline(pantX+14, ptBaseY, pantX+4, ptMidY+6, 0.65, 1);
+  pline(pantX-4, ptMidY+6, pantX+4, ptMidY+6, 0.72, 1.3);
+  pline(pantX, ptMidY+6, pantX+rnd(1), wireY2+2, 0.35, 0.7);
+
+  // Wheels
+  for (const wx2 of [x-TW/2+16, x-TW/2+46, x+TW/2-16, x+TW/2-46]) {
+    ctx.save(); ctx.strokeStyle=INK; ctx.lineWidth=1.3; ctx.globalAlpha=0.78; ctx.lineCap='round';
+    ctx.beginPath(); ctx.arc(wx2+rnd(0.5), GY+1, 9, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+    // spokes
+    pline(wx2-6, GY-3, wx2+6, GY+5, 0.3, 0.6);
+    pline(wx2-6, GY+5, wx2+6, GY-3, 0.3, 0.6);
+    pline(wx2, GY-8, wx2, GY+10, 0.25, 0.5);
+  }
+  // Axle
+  pline(x-TW/2+16, GY+1, x-TW/2+46, GY+1, 0.35, 0.8);
+  pline(x+TW/2-46, GY+1, x+TW/2-16, GY+1, 0.35, 0.8);
+
+  // Destination board
+  ctx.save();
+  ctx.font='bold 6px Georgia'; ctx.fillStyle=INK;
+  ctx.globalAlpha=0.55; ctx.textAlign='center';
+  const ns2 = stations[nextStationIdx];
+  ctx.fillText(ns2 ? ns2.name.substring(0,10) : '—', x-TW/2+30, ty+4);
+  ctx.restore();
+
+  ctx.restore();
 }
 
 requestAnimationFrame(loop);
