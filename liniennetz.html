@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Liniennetz — ein Bahn-Puzzle</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
+body { background:#f6f1e3; overflow:hidden; font-family:'Georgia',serif; cursor:default; }
+canvas { display:block; position:fixed; top:0; left:0; }
+#hud { position:fixed; top:20px; left:50%; transform:translateX(-50%); display:flex; gap:38px; color:#3a342a; font-size:11px; letter-spacing:.18em; opacity:.55; pointer-events:none; font-style:italic; user-select:none; text-transform:lowercase; }
+#keys { position:fixed; bottom:18px; right:22px; color:#9c9484; font-size:10px; text-align:right; line-height:1.8; pointer-events:none; font-style:italic; }
+#msg { position:fixed; top:42%; left:50%; transform:translate(-50%,-50%); color:#3a342a; font-size:13px; font-style:italic; letter-spacing:.3em; text-align:center; line-height:2.4; opacity:0; transition:opacity 1.2s; pointer-events:none; text-transform:uppercase; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <span id="h-score">0 befördert</span>
+  <span id="h-lines">0 / 5 linien</span>
+  <span id="h-time">0:00</span>
+</div>
+<div id="msg"></div>
+<div id="keys">ziehen: linie bauen / verlängern<br>doppelklick auf endstation: kürzen</div>
+<script>
+"use strict";
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const msgEl=document.getElementById('msg');
+
+// — paper, same quiet cream grain as bahnsim —
+const paper=document.createElement('canvas');
+const pctx=paper.getContext('2d');
+function cl(v){return Math.max(0,Math.min(255,v));}
+function buildPaper(){
+  paper.width=canvas.width; paper.height=canvas.height;
+  pctx.fillStyle='#f6f1e3'; pctx.fillRect(0,0,paper.width,paper.height);
+  const id=pctx.getImageData(0,0,paper.width,paper.height), d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    const n=(Math.random()-.5)*5;
+    d[i]=cl(d[i]+n); d[i+1]=cl(d[i+1]+n*.9); d[i+2]=cl(d[i+2]+n*.7);
+  }
+  pctx.putImageData(id,0,0);
+}
+function resize(){ canvas.width=innerWidth; canvas.height=innerHeight; buildPaper(); }
+resize(); addEventListener('resize',resize);
+
+const INK='#2a2620';
+const COLORS=['#b5483a','#3a6b9c','#6f8a3a','#c2913a','#7a4a7e'];
+const SHAPES=['circle','triangle','square','star','diamond'];
+const R=11;               // station radius
+const CAP_TRAIN=6;
+const CAP_STATION=6;
+const OVERCROWD_S=14;
+const MAX_LINES=5;
+const MAX_STATIONS=14;
+
+// pencil line with subtle wobble
+function pl(x1,y1,x2,y2,col,a,w){
+  ctx.strokeStyle=col; ctx.globalAlpha=a; ctx.lineWidth=w; ctx.lineCap='round';
+  const dx=x2-x1, dy=y2-y1, len=Math.hypot(dx,dy), n=Math.max(2,Math.floor(len/26));
+  ctx.beginPath(); ctx.moveTo(x1,y1);
+  for(let i=1;i<=n;i++){
+    const t=i/n, wob=(i<n)?Math.sin(t*7+x1*.13+y1*.07)*.9:0;
+    ctx.lineTo(x1+dx*t-dy/len*wob, y1+dy*t+dx/len*wob);
+  }
+  ctx.stroke(); ctx.globalAlpha=1;
+}
+
+function drawShape(x,y,shape,r,fill){
+  ctx.beginPath();
+  if(shape==='circle') ctx.arc(x,y,r,0,Math.PI*2);
+  else if(shape==='square') ctx.rect(x-r*.85,y-r*.85,r*1.7,r*1.7);
+  else if(shape==='triangle'){
+    ctx.moveTo(x,y-r); ctx.lineTo(x+r*.95,y+r*.75); ctx.lineTo(x-r*.95,y+r*.75); ctx.closePath();
+  } else if(shape==='diamond'){
+    ctx.moveTo(x,y-r*1.1); ctx.lineTo(x+r*.9,y); ctx.lineTo(x,y+r*1.1); ctx.lineTo(x-r*.9,y); ctx.closePath();
+  } else if(shape==='star'){
+    for(let i=0;i<10;i++){
+      const a=-Math.PI/2+i*Math.PI/5, rr=i%2?r*.45:r*1.05;
+      const px=x+Math.cos(a)*rr, py=y+Math.sin(a)*rr;
+      i?ctx.lineTo(px,py):ctx.moveTo(px,py);
+    }
+    ctx.closePath();
+  }
+  if(fill){ ctx.fill(); } else { ctx.stroke(); }
+}
+
+// — state —
+let stations=[];   // {x,y,shape,queue:[shape], crowd:0}
+let lines=[];      // {color, st:[idx], trains:[{seg,t,dir,pax:[{target}]}]}
+let score=0, clock=0, gameOver=false, started=false;
+let spawnStationT=0, spawnPaxT=0;
+
+function rndPos(){
+  const m=90;
+  for(let tries=0;tries<200;tries++){
+    const x=m+Math.random()*(canvas.width-2*m);
+    const y=m+40+Math.random()*(canvas.height-2*m-40);
+    if(stations.every(s=>Math.hypot(s.x-x,s.y-y)>130)) return {x,y};
+  }
+  return null;
+}
+function addStation(force){
+  if(stations.length>=MAX_STATIONS) return;
+  const p=rndPos(); if(!p) return;
+  const nShapes=stations.length<8?3:5;
+  const shape=force!==undefined?force:SHAPES[Math.floor(Math.random()*nShapes)];
+  stations.push({x:p.x,y:p.y,shape,queue:[],crowd:0});
+}
+function reset(){
+  stations=[]; lines=[]; score=0; clock=0; gameOver=false; started=true;
+  spawnStationT=0; spawnPaxT=0;
+  addStation('circle'); addStation('triangle'); addStation('square');
+  msgEl.style.opacity=0;
+}
+
+// — network: adjacency & BFS next-hop —
+function neighbors(i){
+  const out=new Set();
+  for(const L of lines) for(let k=0;k<L.st.length;k++){
+    if(L.st[k]===i){
+      if(k>0) out.add(L.st[k-1]);
+      if(k<L.st.length-1) out.add(L.st[k+1]);
+    }
+  }
+  return [...out];
+}
+// returns next station index on shortest path from `from` to any station of `shape`, or -1
+function nextHop(from,shape){
+  if(stations[from].shape===shape) return from;
+  const prev={}, q=[from]; prev[from]=from;
+  while(q.length){
+    const cur=q.shift();
+    if(stations[cur].shape===shape){
+      let n=cur; while(prev[n]!==from) n=prev[n];
+      return n;
+    }
+    for(const nb of neighbors(cur)) if(!(nb in prev)){ prev[nb]=cur; q.push(nb); }
+  }
+  return -1;
+}
+
+// — input: drag to build —
+let drag=null; // {line, fromEnd:0|1, pts:[idx], isNew}
+let mouse={x:0,y:0};
+function stationAt(x,y){
+  for(let i=0;i<stations.length;i++)
+    if(Math.hypot(stations[i].x-x,stations[i].y-y)<R+14) return i;
+  return -1;
+}
+canvas.addEventListener('mousedown',e=>{
+  if(gameOver||!started){ reset(); return; }
+  const i=stationAt(e.clientX,e.clientY);
+  if(i<0) return;
+  // endpoint of existing line? extend it (prefer line where station is endpoint)
+  for(const L of lines){
+    if(L.st[L.st.length-1]===i){ drag={line:L,fromEnd:1,isNew:false}; return; }
+    if(L.st[0]===i){ drag={line:L,fromEnd:0,isNew:false}; return; }
+  }
+  if(lines.length<MAX_LINES){
+    const L={color:COLORS[lines.length],st:[i],trains:[]};
+    lines.push(L);
+    drag={line:L,fromEnd:1,isNew:true};
+  }
+});
+canvas.addEventListener('mousemove',e=>{
+  mouse.x=e.clientX; mouse.y=e.clientY;
+  if(!drag) return;
+  const i=stationAt(e.clientX,e.clientY);
+  if(i<0) return;
+  const st=drag.line.st;
+  const endIdx=drag.fromEnd?st.length-1:0;
+  const tip=st[endIdx];
+  if(i===tip) return;
+  if(st.includes(i)) return;           // no loops, keeps routing simple
+  if(drag.fromEnd) st.push(i); else st.unshift(i);
+});
+canvas.addEventListener('mouseup',()=>{
+  if(!drag) return;
+  const L=drag.line;
+  if(L.st.length<2 && drag.isNew){ lines.pop(); }
+  else if(L.st.length>=2 && L.trains.length===0){
+    L.trains.push({seg:0,t:0,dir:1,pax:[]});
+  }
+  drag=null;
+});
+canvas.addEventListener('dblclick',e=>{
+  const i=stationAt(e.clientX,e.clientY);
+  if(i<0) return;
+  for(let li=lines.length-1;li>=0;li--){
+    const L=lines[li], st=L.st;
+    if(st[st.length-1]===i||st[0]===i){
+      if(st[st.length-1]===i) st.pop(); else st.shift();
+      for(const tr of L.trains){ tr.seg=Math.min(tr.seg,Math.max(0,st.length-2)); tr.t=0; }
+      if(st.length<2) lines.splice(li,1);
+      // recolor isn't needed; freed slot reuses colors on next new line
+      return;
+    }
+  }
+});
+
+// — simulation —
+function update(dt){
+  if(!started||gameOver) return;
+  clock+=dt;
+  // new stations
+  spawnStationT+=dt;
+  if(spawnStationT>16&&stations.length<MAX_STATIONS){ spawnStationT=0; addStation(); }
+  // new passengers, gently accelerating
+  spawnPaxT+=dt;
+  const interval=Math.max(1.6,4.2-clock/90);
+  if(spawnPaxT>interval){
+    spawnPaxT=0;
+    const s=stations[Math.floor(Math.random()*stations.length)];
+    const others=[...new Set(stations.map(x=>x.shape))].filter(sh=>sh!==s.shape);
+    if(others.length) s.queue.push(others[Math.floor(Math.random()*others.length)]);
+  }
+  // overcrowding
+  for(const s of stations){
+    if(s.queue.length>CAP_STATION){
+      s.crowd+=dt;
+      if(s.crowd>OVERCROWD_S){
+        gameOver=true;
+        msgEl.innerHTML='betriebsstörung<br><span style="font-size:10px">'+score+' fahrgäste befördert — klick für neue schicht</span>';
+        msgEl.style.opacity=1;
+      }
+    } else s.crowd=Math.max(0,s.crowd-dt*1.5);
+  }
+  // trains
+  for(const L of lines){
+    if(L.st.length<2) continue;
+    for(const tr of L.trains){
+      tr.seg=Math.min(tr.seg,L.st.length-2);
+      const a=stations[L.st[tr.seg]], b=stations[L.st[tr.seg+1]];
+      const len=Math.hypot(b.x-a.x,b.y-a.y);
+      tr.t+= (110*dt/len)*tr.dir;
+      if(tr.t>=1||tr.t<=0){
+        // arrive at a station
+        const atIdx = tr.t>=1 ? tr.seg+1 : tr.seg;
+        const atSt = L.st[atIdx];
+        const here = stations[atSt];
+        // alight: arrived at target shape, or transfer (next hop not served by continuing)
+        tr.pax=tr.pax.filter(p=>{
+          if(here.shape===p.target){ score++; return false; }
+          return true;
+        });
+        // advance / ping-pong
+        if(tr.t>=1){ if(atIdx===L.st.length-1){ tr.dir=-1; tr.t=1; tr.seg=L.st.length-2; } else { tr.seg=atIdx; tr.t=0; } }
+        else { if(atIdx===0){ tr.dir=1; tr.t=0; tr.seg=0; } else { tr.seg=atIdx-1; tr.t=1; } }
+        const nextSt = tr.dir===1 ? L.st[tr.seg+1] : L.st[tr.seg];
+        // transfers off
+        tr.pax=tr.pax.filter(p=>{
+          const hop=nextHop(atSt,p.target);
+          if(hop!==nextSt){ here.queue.push(p.target); return false; }
+          return true;
+        });
+        // board
+        for(let qi=0;qi<here.queue.length&&tr.pax.length<CAP_TRAIN;){
+          const target=here.queue[qi];
+          if(nextHop(atSt,target)===nextSt){ tr.pax.push({target}); here.queue.splice(qi,1); }
+          else qi++;
+        }
+      }
+    }
+  }
+  document.getElementById('h-score').textContent=score+' befördert';
+  document.getElementById('h-lines').textContent=lines.length+' / '+MAX_LINES+' linien';
+  const m=Math.floor(clock/60), s=Math.floor(clock%60);
+  document.getElementById('h-time').textContent=m+':'+(s<10?'0':'')+s;
+}
+
+// — drawing —
+function draw(){
+  ctx.drawImage(paper,0,0);
+  // lines
+  for(const L of lines){
+    for(let k=0;k<L.st.length-1;k++){
+      const a=stations[L.st[k]], b=stations[L.st[k+1]];
+      pl(a.x,a.y,b.x,b.y,L.color,.55,3.2);
+    }
+  }
+  // drag preview
+  if(drag&&drag.line.st.length){
+    const tip=stations[drag.line.st[drag.fromEnd?drag.line.st.length-1:0]];
+    pl(tip.x,tip.y,mouse.x,mouse.y,drag.line.color,.25,2.5);
+  }
+  // stations
+  ctx.lineWidth=2;
+  for(const s of stations){
+    // overcrowd gauge: a faint expanding circle
+    if(s.crowd>0){
+      ctx.strokeStyle='#b5483a'; ctx.globalAlpha=.35;
+      ctx.beginPath(); ctx.arc(s.x,s.y,R+8,-Math.PI/2,-Math.PI/2+Math.PI*2*(s.crowd/OVERCROWD_S)); ctx.stroke();
+      ctx.globalAlpha=1;
+    }
+    ctx.fillStyle='#f6f1e3'; ctx.strokeStyle=INK;
+    drawShape(s.x,s.y,s.shape,R,true);
+    drawShape(s.x,s.y,s.shape,R,false);
+    // waiting passengers as tiny shapes
+    s.queue.slice(0,12).forEach((sh,i)=>{
+      const px=s.x+R+10+(i%6)*11, py=s.y-8+Math.floor(i/6)*12;
+      ctx.strokeStyle=INK; ctx.globalAlpha=.7; ctx.lineWidth=1.1;
+      drawShape(px,py,sh,3.6,false);
+      ctx.globalAlpha=1; ctx.lineWidth=2;
+    });
+  }
+  // trains
+  for(const L of lines){
+    for(const tr of L.trains){
+      if(L.st.length<2) continue;
+      const a=stations[L.st[tr.seg]], b=stations[L.st[tr.seg+1]];
+      const x=a.x+(b.x-a.x)*tr.t, y=a.y+(b.y-a.y)*tr.t;
+      const ang=Math.atan2(b.y-a.y,b.x-a.x);
+      ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+      ctx.fillStyle=L.color; ctx.globalAlpha=.85;
+      ctx.fillRect(-13,-5,26,10);
+      ctx.globalAlpha=1; ctx.strokeStyle=INK; ctx.lineWidth=1.4;
+      ctx.strokeRect(-13,-5,26,10);
+      // occupancy ticks
+      ctx.strokeStyle='#f6f1e3';
+      for(let i=0;i<tr.pax.length;i++){ ctx.beginPath(); ctx.moveTo(-10+i*4,-2); ctx.lineTo(-10+i*4,2); ctx.stroke(); }
+      ctx.restore();
+    }
+  }
+  if(!started){
+    msgEl.innerHTML='liniennetz<br><span style="font-size:10px">verbinde die stationen, bring jede form nach hause — klick zum start</span>';
+    msgEl.style.opacity=1;
+  }
+}
+
+let last=performance.now();
+function loop(now){
+  const dt=Math.min(.05,(now-last)/1000); last=now;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
